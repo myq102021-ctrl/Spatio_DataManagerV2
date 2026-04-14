@@ -1438,6 +1438,39 @@ const SmartMapEditor: React.FC<{
         }
     };
 
+    const handleSave = () => {
+        const updatedData = {
+            layerTree,
+            drawnFeatures,
+            zoom,
+            dimension,
+            splitMode,
+            activeBaseMap,
+            enabledBaseMaps,
+            defaultBaseMap,
+            mapCenter,
+            legends,
+            isTimePlayerDropped,
+            timePlayerConfig
+        };
+        if (initialScene) {
+            onUpdateScene(updatedData);
+            onBack();
+        } else {
+            const draftScene: MapScene = {
+                id: `draft-${Date.now()}`,
+                title: `草稿-未命名场景-${new Date().toLocaleDateString()}`,
+                description: '这是您在设计器中自动保存的草稿。',
+                thumbnail: buildLayersOnlySnapshotDataUrl(getVisibleLayerLabelsFromTree(layerTree)),
+                tags: ['自动保存', '草稿'],
+                isFavorite: false,
+                status: 'draft',
+                ...updatedData
+            };
+            onSaveDraft(draftScene);
+        }
+    };
+
     const confirmSaveAndExit = () => {
         const updatedData = {
             layerTree,
@@ -2102,6 +2135,10 @@ const SmartMapEditor: React.FC<{
                         <button onClick={() => setIsPublishModalOpen(true)} className="flex items-center gap-1.5 px-4 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-black hover:bg-blue-700 transition-all shadow-md active:scale-95">
                             <Share2 size={14} />
                             <span>发布到集市</span>
+                        </button>
+                        <button onClick={handleSave} className="flex items-center gap-1.5 px-4 py-1.5 bg-green-600 text-white rounded-lg text-xs font-black hover:bg-green-700 transition-all shadow-md active:scale-95">
+                            <Save size={14} />
+                            <span>保存</span>
                         </button>
                         <button onClick={handleExitDesign} className="group flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg text-xs font-bold hover:text-blue-600 shadow-sm active:scale-95">
                             <Undo2 size={14} className="group-hover:-translate-x-0.5 transition-transform" />

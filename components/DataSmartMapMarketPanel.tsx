@@ -23,6 +23,7 @@ import {
   Eye,
   EyeOff,
   Trash2,
+  Edit3,
   MousePointer2,
   Plus,
   Minus,
@@ -347,6 +348,10 @@ export const DataSmartMapMarketPanel: React.FC<{ marketTree: MarketNode[], setMa
   };
 
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [editingNode, setEditingNode] = useState<{ id: string; label: string } | null>(null);
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [deletingNode, setDeletingNode] = useState<{ id: string; label: string; childCount: number } | null>(null);
 
   const handleCreateDirectory = (name: string, parentId: string) => {
     const newNode: MarketNode = {
@@ -378,6 +383,40 @@ export const DataSmartMapMarketPanel: React.FC<{ marketTree: MarketNode[], setMa
       setMarketTree(prev => addToTree(prev));
     }
     setIsCreateModalOpen(false);
+  };
+
+  const handleEditDirectory = (id: string, newName: string) => {
+    const renameInTree = (nodes: MarketNode[]): MarketNode[] =>
+      nodes.map(node => {
+        if (node.id === id) return { ...node, label: newName };
+        if (node.children) return { ...node, children: renameInTree(node.children) };
+        return node;
+      });
+    setMarketTree(prev => renameInTree(prev));
+    setIsEditModalOpen(false);
+    setEditingNode(null);
+  };
+
+  const handleDeleteDirectory = (id: string) => {
+    let releasedChildren: MarketNode[] = [];
+    const removeFromTree = (nodes: MarketNode[]): MarketNode[] => {
+      const result: MarketNode[] = [];
+      for (const node of nodes) {
+        if (node.id === id) {
+          releasedChildren = node.children || [];
+        } else {
+          result.push(node.children
+            ? { ...node, children: removeFromTree(node.children) }
+            : node
+          );
+        }
+      }
+      return result;
+    };
+    setMarketTree(prev => [...removeFromTree(prev), ...releasedChildren]);
+    setIsDeleteConfirmOpen(false);
+    setDeletingNode(null);
+    if (activeCategoryId === id) setActiveCategoryId('all');
   };
 
   const flatDirectories = useMemo(() => {
@@ -468,6 +507,8 @@ export const DataSmartMapMarketPanel: React.FC<{ marketTree: MarketNode[], setMa
                       onSelect={setActiveCategoryId}
                       layerVisibility={layerVisibility}
                       onToggleLayerVisibility={toggleLayerVisibility}
+                      onEdit={(id, label) => { setEditingNode({ id, label }); setIsEditModalOpen(true); }}
+                      onDelete={(id, label, childCount) => { setDeletingNode({ id, label, childCount }); setIsDeleteConfirmOpen(true); }}
                     />
                   ))}
                 </div>
@@ -809,6 +850,22 @@ export const DataSmartMapMarketPanel: React.FC<{ marketTree: MarketNode[], setMa
             onConfirm={handleCreateDirectory}
           />
         )}
+
+        {isEditModalOpen && editingNode && (
+          <EditDirectoryModal
+            node={editingNode}
+            onClose={() => { setIsEditModalOpen(false); setEditingNode(null); }}
+            onConfirm={handleEditDirectory}
+          />
+        )}
+
+        {isDeleteConfirmOpen && deletingNode && (
+          <DeleteDirectoryConfirmModal
+            node={deletingNode}
+            onClose={() => { setIsDeleteConfirmOpen(false); setDeletingNode(null); }}
+            onConfirm={() => handleDeleteDirectory(deletingNode.id)}
+          />
+        )}
       </main>
 
     </div>
@@ -880,6 +937,106 @@ const CreateDirectoryModal: React.FC<{
     </div>
   );
 };
+
+const EditDirectoryModal: React.FC<{
+  node: { id: string; label: string };
+  onClose: () => void;
+  onConfirm: (id: string, newName: string) => void;
+}> = ({ node, onClose, onConfirm }) => {
+  const [name, setName] = useState(node.label);
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm animate-fadeIn">
+      <div className="bg-white rounded-2xl shadow-2xl w-[440px] border border-slate-200 overflow-hidden animate-zoomIn">
+        <div className="flex justify-between items-center px-6 py-5 border-b border-slate-100">
+          <h3 className="text-base font-bold text-slate-800 tracking-tight flex items-center gap-2">
+            <Edit3 size={16} className="text-blue-600" />
+            编辑目录名称
+          </h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 transition-colors">
+            <X size={20} />
+          </button>
+        </div>
+        <div className="p-6 space-y-4">
+          <div className="space-y-2">
+            <label className="text-sm font-bold text-slate-600">目录名称</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoFocus
+              placeholder="请输入目录名称"
+              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all text-sm"
+            />
+          </div>
+        </div>
+        <div className="px-6 py-4 bg-slate-50/50 border-t border-slate-100 flex justify-end gap-3">
+          <button
+            onClick={onClose}
+            className="px-5 py-2 rounded-xl text-sm font-bold text-slate-500 hover:bg-slate-100 transition-all"
+          >
+            取消
+          </button>
+          <button
+            onClick={() => name.trim() && onConfirm(node.id, name.trim())}
+            disabled={!name.trim() || name.trim() === node.label}
+            className="px-7 py-2 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 transition-all shadow-lg shadow-blue-100 disabled:opacity-50 disabled:shadow-none"
+          >
+            保存
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const DeleteDirectoryConfirmModal: React.FC<{
+  node: { id: string; label: string; childCount: number };
+  onClose: () => void;
+  onConfirm: () => void;
+}> = ({ node, onClose, onConfirm }) => (
+  <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm animate-fadeIn">
+    <div className="bg-white rounded-2xl shadow-2xl w-[460px] border border-slate-200 overflow-hidden animate-zoomIn">
+      <div className="flex justify-between items-center px-6 py-5 border-b border-slate-100">
+        <h3 className="text-base font-bold text-slate-800 tracking-tight flex items-center gap-2">
+          <Trash2 size={16} className="text-rose-500" />
+          删除目录
+        </h3>
+        <button onClick={onClose} className="text-slate-400 hover:text-slate-600 transition-colors">
+          <X size={20} />
+        </button>
+      </div>
+      <div className="p-6 space-y-4">
+        <p className="text-sm text-slate-600 leading-relaxed">
+          确定要删除目录 <span className="font-bold text-slate-800">「{node.label}」</span> 吗？此操作不可撤销。
+        </p>
+        {node.childCount > 0 && (
+          <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+            <div className="w-5 h-5 rounded-full bg-amber-400 text-white flex items-center justify-center flex-shrink-0 mt-0.5 text-[11px] font-black">!</div>
+            <p className="text-sm text-amber-700 leading-relaxed">
+              该目录下有 <span className="font-bold">{node.childCount}</span> 个关联场景/子目录，删除后将自动释放到
+              <span className="font-bold">「全部场景」</span> 根目录下。
+            </p>
+          </div>
+        )}
+      </div>
+      <div className="px-6 py-4 bg-slate-50/50 border-t border-slate-100 flex justify-end gap-3">
+        <button
+          onClick={onClose}
+          className="px-5 py-2 rounded-xl text-sm font-bold text-slate-500 hover:bg-slate-100 transition-all"
+        >
+          取消
+        </button>
+        <button
+          onClick={onConfirm}
+          className="px-7 py-2 bg-rose-500 text-white rounded-xl text-sm font-bold hover:bg-rose-600 transition-all shadow-lg shadow-rose-100"
+        >
+          确认删除
+        </button>
+      </div>
+    </div>
+  </div>
+);
 
 const MapToolIconButton: React.FC<{ icon: React.ReactNode }> = ({ icon }) => (
     <button className="p-2 text-slate-500 hover:text-blue-600 hover:bg-white rounded-lg transition-all">
@@ -1063,12 +1220,16 @@ const MarketDirectoryItem: React.FC<{
   level?: number;
   layerVisibility?: Record<string, boolean>;
   onToggleLayerVisibility?: (id: string) => void;
-}> = ({ node, activeId, onSelect, level = 0, layerVisibility = {}, onToggleLayerVisibility }) => {
+  onEdit?: (id: string, label: string) => void;
+  onDelete?: (id: string, label: string, childCount: number) => void;
+}> = ({ node, activeId, onSelect, level = 0, layerVisibility = {}, onToggleLayerVisibility, onEdit, onDelete }) => {
   const [isOpen, setIsOpen] = useState(level === 0);
   const isActive = activeId === node.id;
   const hasChildren = node.children && node.children.length > 0;
   const isSubLayer = level >= 2;
   const isVisible = layerVisibility[node.id] !== false;
+  const isRoot = node.id === 'all';
+  const canEditDelete = !isRoot && level === 0;
 
   const renderIcon = () => {
     if (node.icon) return node.icon;
@@ -1108,7 +1269,32 @@ const MarketDirectoryItem: React.FC<{
         )}
         <div className={`shrink-0 flex items-center justify-center w-6 ${isActive ? 'text-white' : 'text-slate-400 group-hover:text-blue-500'}`}>{renderIcon()}</div>
         <span className={`flex-1 text-[13px] truncate ml-1.5 ${isActive ? 'font-bold' : 'font-medium'} ${isSubLayer && !isVisible ? 'opacity-60 line-through' : ''}`}>{node.label}</span>
-        {node.count !== undefined && <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-lg shrink-0 ${isActive ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-400'}`}>{node.count}</span>}
+        {node.count !== undefined && !canEditDelete && (
+          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-lg shrink-0 ${isActive ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-400'}`}>{node.count}</span>
+        )}
+        {canEditDelete && (
+          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+            {node.count !== undefined && (
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-lg mr-1 ${isActive ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-400'}`}>{node.count}</span>
+            )}
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onEdit && onEdit(node.id, node.label); }}
+              className={`p-1 rounded-md transition-colors ${isActive ? 'text-white/70 hover:text-white hover:bg-white/20' : 'text-slate-400 hover:text-blue-600 hover:bg-blue-50'}`}
+              title="编辑目录"
+            >
+              <Edit3 size={12} />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onDelete && onDelete(node.id, node.label, node.children?.length ?? 0); }}
+              className={`p-1 rounded-md transition-colors ${isActive ? 'text-white/70 hover:text-white hover:bg-white/20' : 'text-slate-400 hover:text-rose-600 hover:bg-rose-50'}`}
+              title="删除目录"
+            >
+              <Trash2 size={12} />
+            </button>
+          </div>
+        )}
       </div>
       {hasChildren && isOpen && (
         <div className="mt-0.5 animate-fadeIn">
@@ -1121,6 +1307,8 @@ const MarketDirectoryItem: React.FC<{
               level={level + 1}
               layerVisibility={layerVisibility}
               onToggleLayerVisibility={onToggleLayerVisibility}
+              onEdit={onEdit}
+              onDelete={onDelete}
             />
           ))}
         </div>
