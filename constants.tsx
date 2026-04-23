@@ -20,9 +20,11 @@ import {
   Settings,
   ClipboardCheck,
   ShieldCheck,
+  Shield,
+  SearchCode,
   Component
 } from 'lucide-react';
-import { MenuItem, TableRow, TreeNode, TabItem } from './types';
+import { MenuItem, TableRow, TreeNode, TabItem, DataSensitivity } from './types';
 
 // Sidebar Menu Data
 export const MENU_ITEMS: MenuItem[] = [
@@ -89,6 +91,16 @@ export const MENU_ITEMS: MenuItem[] = [
       { id: 'service_market', label: '服务集集市', icon: <LayoutGrid size={18} /> },
       { id: 'service_stats', label: '服务调用统计', icon: <BarChart3 size={18} /> },
     ] 
+  },
+  {
+    id: 'data_security',
+    label: '数据安全',
+    icon: <ShieldCheck size={20} />,
+    children: [
+      { id: 'data_sensitivity', label: '数据密级', icon: <Shield size={18} /> },
+      { id: 'sensitive_data_config', label: '敏感数据配置', icon: <TableProperties size={18} /> },
+      { id: 'identification_rules', label: '识别规则管理', icon: <SearchCode size={18} /> },
+    ]
   },
   { id: 'cloud_disk', label: '数据云盘', icon: <HardDrive size={20} />, children: [] },
   { 
@@ -322,6 +334,50 @@ export const MOCK_API_DATA: APIRow[] = [
     tags: ['林业资源', '生态监测'],
     description: '草稿：基于最新遥感影像提取的林业覆盖一张图。'
   }
+];
+
+// 数据密级示例（L1–L4）
+export const MOCK_DATA_SENSITIVITY: DataSensitivity[] = [
+  {
+    id: 'ds-l1',
+    code: 'L1',
+    name: '公开级',
+    sensitivity: '不敏感数据',
+    impact: '无危害',
+    securityLevel: '无风险',
+    processingMethod: '可对外发布与公开共享',
+    createTime: '2024-01-01 10:00:00',
+  },
+  {
+    id: 'ds-l2',
+    code: 'L2',
+    name: '内部级',
+    sensitivity: '低敏感数据',
+    impact: '一般危害',
+    securityLevel: '一般风险',
+    processingMethod: '限组织内部使用，外发需脱敏与审批',
+    createTime: '2024-01-01 10:00:00',
+  },
+  {
+    id: 'ds-l3',
+    code: 'L3',
+    name: '敏感级',
+    sensitivity: '较敏感数据',
+    impact: '严重危害',
+    securityLevel: '严重风险',
+    processingMethod: '强身份鉴权、全链路审计、默认脱敏展示',
+    createTime: '2024-01-01 10:00:00',
+  },
+  {
+    id: 'ds-l4',
+    code: 'L4',
+    name: '涉密级',
+    sensitivity: '涉密数据',
+    impact: '特别严重危害',
+    securityLevel: '特别严重风险',
+    processingMethod: '专网隔离、禁止出境、按密级管理要求存储与访问',
+    createTime: '2024-01-01 10:00:00',
+  },
 ];
 
 // Header Tabs

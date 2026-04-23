@@ -22,7 +22,7 @@ interface SidebarProps {
 
 export const Sidebar: React.FC<SidebarProps> = ({ activeMenuId, onMenuSelect }) => {
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const [expandedMenus, setExpandedMenus] = useState<Set<string>>(new Set(['data_integration', 'list', 'services', 'smart_map_parent']));
+  const [expandedMenus, setExpandedMenus] = useState<Set<string>>(new Set(['data_integration', 'list', 'services', 'smart_map_parent', 'data_security']));
   const [isProfileExpanded, setIsProfileExpanded] = useState(false);
   
   // 用于实现点击外部关闭逻辑

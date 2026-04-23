@@ -56,3 +56,38 @@ export interface MarketNode {
   count?: number;
   children?: MarketNode[];
 }
+
+/** 数据密级（L1–L4 等） */
+export interface DataSensitivity {
+  id: string;
+  code: string;
+  name: string;
+  sensitivity: string;
+  impact: string;
+  securityLevel: string;
+  processingMethod: string;
+  createTime: string;
+}
+
+/** 业务字段与脱敏/策略配置 */
+export interface SensitiveDataConfig {
+  id: string;
+  dataSource: string;
+  dbSchema: string;
+  tableName: string;
+  columnName: string;
+  maskingAlgorithm: string;
+  status: 'enabled' | 'disabled';
+}
+
+/** 敏感信息自动识别规则 */
+export interface IdentificationRule {
+  id: string;
+  name: string;
+  method: string;
+  matchPattern: string;
+  excludePattern?: string;
+  maskingAlgorithm: string;
+  status: 'enabled' | 'disabled';
+  description?: string;
+}

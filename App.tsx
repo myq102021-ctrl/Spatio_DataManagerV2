@@ -16,6 +16,9 @@ import { PersonalConsolePanel } from './components/PersonalConsolePanel';
 import { MyApplicationsPanel } from './components/MyApplicationsPanel';
 import { AuditApplicationPanel } from './components/AuditApplicationPanel';
 import { SpatialSearchPanel } from './components/SpatialSearchPanel';
+import { DataSensitivityPanel } from './components/DataSensitivityPanel';
+import { SensitiveDataConfigPanel } from './components/SensitiveDataConfigPanel';
+import { IdentificationRulesPanel } from './components/IdentificationRulesPanel';
 import { MOCK_API_DATA, APIRow } from './constants';
 import { ApplicationRecord, MarketNode } from './types';
 import { LayoutGrid } from 'lucide-react';
@@ -223,7 +226,10 @@ function App() {
       datasource_mgmt: '数据源管理',
       spatio_temporal_search: '数据时空检索',
       smart_map: '地图场景设计',
-      smart_map_market: '地图场景集市'
+      smart_map_market: '地图场景集市',
+      data_sensitivity: '数据密级',
+      sensitive_data_config: '敏感数据配置',
+      identification_rules: '识别规则管理',
   };
 
   return (
@@ -299,6 +305,12 @@ function App() {
                         records={applications} 
                         onAudit={handleAuditAction}
                     />
+                ) : activeMenuId === 'data_sensitivity' ? (
+                    <DataSensitivityPanel />
+                ) : activeMenuId === 'sensitive_data_config' ? (
+                    <SensitiveDataConfigPanel onNavigate={handleMenuSelect} />
+                ) : activeMenuId === 'identification_rules' ? (
+                    <IdentificationRulesPanel onNavigate={handleMenuSelect} />
                 ) : (
                     <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
                         <div className="p-6 bg-slate-50 rounded-3xl mb-4 border border-slate-100 shadow-inner">
