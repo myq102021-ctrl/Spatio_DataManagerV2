@@ -19,6 +19,8 @@ import { SpatialSearchPanel } from './components/SpatialSearchPanel';
 import { DataSensitivityPanel } from './components/DataSensitivityPanel';
 import { SensitiveDataConfigPanel } from './components/SensitiveDataConfigPanel';
 import { IdentificationRulesPanel } from './components/IdentificationRulesPanel';
+import { BusinessManagementPanel } from './components/BusinessManagementPanel';
+import { DataStandardPanel } from './components/DataStandardPanel';
 import { MOCK_API_DATA, APIRow } from './constants';
 import { ApplicationRecord, MarketNode } from './types';
 import { LayoutGrid } from 'lucide-react';
@@ -218,6 +220,8 @@ function App() {
 
   const menuLabels: Record<string, string> = {
       data_theme: '数据主题',
+      data_standard: '数据标准',
+      business_management: '业务管理',
       my_applications: '我的申请',
       my_favorites: '我的收藏',
       personal_console: '个人中心',
@@ -248,6 +252,10 @@ function App() {
             <div className="flex flex-col h-full bg-white rounded-xl overflow-hidden shadow-sm relative ring-1 ring-slate-900/5">
                 {activeMenuId === 'data_theme' ? (
                     <DataThemePanel />
+                ) : activeMenuId === 'data_standard' ? (
+                    <DataStandardPanel />
+                ) : activeMenuId === 'business_management' ? (
+                    <BusinessManagementPanel />
                 ) : activeMenuId === 'data_list' ? (
                    <>
                        {viewMode === 'list' ? (

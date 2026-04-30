@@ -98,6 +98,16 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeMenuId, onMenuSelect }) 
       {/* Menu Items - Changed custom-scrollbar to no-scrollbar */}
       <div className="flex-1 overflow-y-auto px-3 space-y-1 no-scrollbar">
         {MENU_ITEMS.map((item) => {
+          if (item.type === 'header') {
+            if (isCollapsed) return <div key={item.id} className="h-4" />;
+            return (
+              <div key={item.id} className="pt-6 pb-2 px-5 flex items-center gap-2.5 animate-fadeIn">
+                <div className="w-1 h-3 bg-blue-500 rounded-full shadow-[0_0_8px_rgba(59,130,246,0.5)]"></div>
+                <span className="text-[13px] font-black text-slate-500/90 tracking-widest">{item.label}</span>
+              </div>
+            );
+          }
+
           const isDirectlyActive = activeMenuId === item.id;
           const hasActiveChild = item.children?.some(c => c.id === activeMenuId);
 

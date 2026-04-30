@@ -11,14 +11,18 @@
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.2.1",
+    "@tmcw/togeojson": "^7.1.2",
+    "leaflet": "^1.9.4",
     "lucide-react": "^0.561.0",
     "motion": "^12.38.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "recharts": "^3.8.0",
+    "shpjs": "^6.2.0",
     "tailwindcss": "^4.2.1"
   },
   "devDependencies": {
+    "@types/leaflet": "^1.9.21",
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
     "typescript": "~5.8.2",

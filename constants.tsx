@@ -22,19 +22,51 @@ import {
   ShieldCheck,
   Shield,
   SearchCode,
-  Component
+  Component,
+  Building2
 } from 'lucide-react';
 import { MenuItem, TableRow, TreeNode, TabItem, DataSensitivity } from './types';
 
 // Sidebar Menu Data
 export const MENU_ITEMS: MenuItem[] = [
+  { id: 'header1', label: '基础数据底座', type: 'header' },
   { id: 'stats', label: '数据统计', icon: <BarChart3 size={20} /> },
+  { 
+    id: 'search', 
+    label: '数据检索', 
+    icon: <Search size={20} />,
+    children: [
+      { id: 'spatio_temporal_search', label: '数据时空检索', icon: <MapIcon size={18} /> },
+    ]
+  },
+  { 
+    id: 'list', 
+    label: '数据总库', 
+    icon: <List size={20} />, 
+    children: [
+      { id: 'data_list', label: '数据列表', icon: <TableProperties size={18} /> },
+      { id: 'metadata', label: '元数据管理', icon: <Database size={18} /> },
+      { id: 'style_mgmt', label: '样式管理', icon: <Palette size={18} /> },
+    ] 
+  },
+  { 
+    id: 'resources', 
+    label: '数据集市', 
+    icon: <HardDrive size={20} />, 
+    children: [
+      { id: 'service_market', label: '服务集市', icon: <LayoutGrid size={18} /> },
+    ] 
+  },
+  { id: 'cloud_disk', label: '数据云盘', icon: <HardDrive size={20} />, children: [] },
+  
+  { id: 'header2', label: '数据治理开发', type: 'header' },
   { 
     id: 'planning', 
     label: '数据规划', 
     icon: <Compass size={20} />, 
     children: [
       { id: 'data_theme', label: '数据主题', icon: <Database size={18} /> },
+      { id: 'business_management', label: '业务管理', icon: <Building2 size={18} /> },
       { id: 'data_layer', label: '数据分层', icon: <Layers size={18} /> },
       { id: 'data_standard', label: '数据标准', icon: <FileText size={18} /> },
       { id: 'data_model', label: '数据模型', icon: <Box size={18} /> },
@@ -50,36 +82,6 @@ export const MENU_ITEMS: MenuItem[] = [
       { id: 'spatial_ingestion', label: '时空数据入库', icon: <Share2 size={18} /> },
     ]
   },
-  { 
-    id: 'search', 
-    label: '数据检索', 
-    icon: <Search size={20} />,
-    children: [
-      { id: 'spatio_temporal_search', label: '数据时空检索', icon: <MapIcon size={18} /> },
-      { id: 'comprehensive_search', label: '数据综合检索', icon: <Search size={18} /> },
-      { id: 'intelligent_search', label: '数据智能检索', icon: <DatabaseZap size={18} /> },
-    ]
-  },
-  { 
-    id: 'list', 
-    label: '数据目录', 
-    icon: <List size={20} />, 
-    children: [
-      { id: 'data_list', label: '数据列表', icon: <TableProperties size={18} /> },
-      { id: 'metadata', label: '元数据管理', icon: <Database size={18} /> },
-      { id: 'style_mgmt', label: '样式管理', icon: <Palette size={18} /> },
-    ] 
-  },
-  { 
-    id: 'smart_map_parent', 
-    label: '地图场景', 
-    icon: <MapIcon size={20} />,
-    children: [
-      { id: 'smart_map', label: '地图场景设计', icon: <Component size={18} /> },
-      { id: 'smart_map_market', label: '地图场景集市', icon: <Component size={18} /> },
-    ]
-  },
-  { id: 'resources', label: '数据资源', icon: <HardDrive size={20} />, children: [] },
   { id: 'quality', label: '数据质量', icon: <BarChart3 size={20} />, children: [] },
   { id: 'development', label: '数据开发', icon: <Factory size={20} />, children: [] },
   { 
@@ -88,7 +90,6 @@ export const MENU_ITEMS: MenuItem[] = [
     icon: <Share2 size={20} />, 
     children: [
       { id: 'service_dev', label: '服务开发', icon: <Share2 size={18} /> },
-      { id: 'service_market', label: '服务集集市', icon: <LayoutGrid size={18} /> },
       { id: 'service_stats', label: '服务调用统计', icon: <BarChart3 size={18} /> },
     ] 
   },
@@ -102,7 +103,6 @@ export const MENU_ITEMS: MenuItem[] = [
       { id: 'identification_rules', label: '识别规则管理', icon: <SearchCode size={18} /> },
     ]
   },
-  { id: 'cloud_disk', label: '数据云盘', icon: <HardDrive size={20} />, children: [] },
   { 
     id: 'system_mgmt', 
     label: '系统管理', 
@@ -111,6 +111,17 @@ export const MENU_ITEMS: MenuItem[] = [
       { id: 'audit_application', label: '数据申请审核', icon: <ClipboardCheck size={18} /> },
       { id: 'audit_listing', label: '数据上架审核', icon: <ShieldCheck size={18} /> },
     ] 
+  },
+
+  { id: 'header3', label: '数据应用与分析', type: 'header' },
+  { 
+    id: 'smart_map_parent', 
+    label: '地图场景', 
+    icon: <MapIcon size={20} />,
+    children: [
+      { id: 'smart_map', label: '地图场景设计', icon: <Component size={18} /> },
+      { id: 'smart_map_market', label: '地图场景集市', icon: <Component size={18} /> },
+    ]
   },
 ];
 

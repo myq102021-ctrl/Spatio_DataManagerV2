@@ -4,9 +4,10 @@ import { ReactNode } from 'react';
 export interface MenuItem {
   id: string;
   label: string;
-  icon: ReactNode;
+  icon?: ReactNode;
   children?: MenuItem[];
   isActive?: boolean;
+  type?: 'item' | 'header';
 }
 
 export interface TableRow {
