@@ -5,7 +5,6 @@ import {
   Compass, 
   Layers, 
   Search, 
-  List, 
   Database, 
   HardDrive,
   Map as MapIcon,
@@ -14,6 +13,7 @@ import {
   TableProperties,
   DatabaseZap,
   FileText,
+  Table2,
   Box,
   Palette,
   LayoutGrid,
@@ -23,9 +23,18 @@ import {
   Shield,
   SearchCode,
   Component,
-  Building2
+  Building2,
+  Store,
+  Network,
+  Workflow,
+  FileUp,
+  FolderInput,
 } from 'lucide-react';
-import { MenuItem, TableRow, TreeNode, TabItem, DataSensitivity } from './types';
+import { MenuItem, TableRow, TreeNode, TabItem, DataSensitivity, DataThemeBindOption } from './types';
+
+/** 通用地理数据示意图：灰度世界地图（数据卡片封面、详情默认封面等） */
+export const WORLD_MAP_SCHEMATIC_COVER_URL =
+  'https://upload.wikimedia.org/wikipedia/commons/thumb/e/ec/World_map_blank_without_borders.svg/1280px-World_map_blank_without_borders.svg.png';
 
 // Sidebar Menu Data
 export const MENU_ITEMS: MenuItem[] = [
@@ -33,28 +42,21 @@ export const MENU_ITEMS: MenuItem[] = [
   { id: 'stats', label: '数据统计', icon: <BarChart3 size={20} /> },
   { 
     id: 'search', 
-    label: '数据检索', 
+    label: '时空综合检索', 
     icon: <Search size={20} />,
     children: [
-      { id: 'spatio_temporal_search', label: '数据时空检索', icon: <MapIcon size={18} /> },
+      { id: 'spatio_temporal_search', label: '时空综合检索', icon: <MapIcon size={18} /> },
+      { id: 'knowledge_graph_search', label: '知识图谱检索', icon: <Network size={18} /> },
     ]
   },
-  { 
-    id: 'list', 
-    label: '数据总库', 
-    icon: <List size={20} />, 
-    children: [
-      { id: 'data_list', label: '数据列表', icon: <TableProperties size={18} /> },
-      { id: 'metadata', label: '元数据管理', icon: <Database size={18} /> },
-      { id: 'style_mgmt', label: '样式管理', icon: <Palette size={18} /> },
-    ] 
-  },
+  { id: 'data_list', label: '数据总库', icon: <TableProperties size={20} /> },
   { 
     id: 'resources', 
     label: '数据集市', 
     icon: <HardDrive size={20} />, 
     children: [
       { id: 'service_market', label: '服务集市', icon: <LayoutGrid size={18} /> },
+      { id: 'public_data_market', label: '公共数据集市', icon: <Store size={18} /> },
     ] 
   },
   { id: 'cloud_disk', label: '数据云盘', icon: <HardDrive size={20} />, children: [] },
@@ -69,6 +71,7 @@ export const MENU_ITEMS: MenuItem[] = [
       { id: 'business_management', label: '业务管理', icon: <Building2 size={18} /> },
       { id: 'data_layer', label: '数据分层', icon: <Layers size={18} /> },
       { id: 'data_standard', label: '数据标准', icon: <FileText size={18} /> },
+      { id: 'standard_code_table', label: '标准码表', icon: <Table2 size={18} /> },
       { id: 'data_model', label: '数据模型', icon: <Box size={18} /> },
     ] 
   },
@@ -79,9 +82,18 @@ export const MENU_ITEMS: MenuItem[] = [
     children: [
       { id: 'datasource_mgmt', label: '数据源管理', icon: <Database size={18} /> },
       { id: 'business_ingestion', label: '业务数据入库', icon: <TableProperties size={18} /> },
-      { id: 'spatial_ingestion', label: '时空数据入库', icon: <Share2 size={18} /> },
+      {
+        id: 'spatial_ingestion',
+        label: '时空数据入库',
+        icon: <Share2 size={18} />,
+        children: [
+          { id: 'spatial_ingestion_single', label: '单次入库', icon: <FileUp size={16} /> },
+          { id: 'spatial_ingestion_batch', label: '批量入库', icon: <FolderInput size={16} /> },
+        ],
+      },
     ]
   },
+  { id: 'metadata', label: '元数据管理', icon: <Database size={20} /> },
   { id: 'quality', label: '数据质量', icon: <BarChart3 size={20} />, children: [] },
   { id: 'development', label: '数据开发', icon: <Factory size={20} />, children: [] },
   { 
@@ -90,6 +102,7 @@ export const MENU_ITEMS: MenuItem[] = [
     icon: <Share2 size={20} />, 
     children: [
       { id: 'service_dev', label: '服务开发', icon: <Share2 size={18} /> },
+      { id: 'style_mgmt', label: '样式管理', icon: <Palette size={18} /> },
       { id: 'service_stats', label: '服务调用统计', icon: <BarChart3 size={18} /> },
     ] 
   },
@@ -103,6 +116,7 @@ export const MENU_ITEMS: MenuItem[] = [
       { id: 'identification_rules', label: '识别规则管理', icon: <SearchCode size={18} /> },
     ]
   },
+  { id: 'governance_tools', label: '治理工具', icon: <Workflow size={20} /> },
   { 
     id: 'system_mgmt', 
     label: '系统管理', 
@@ -423,11 +437,133 @@ export const TREE_DATA: TreeNode[] = [
   }
 ];
 
-// Table Data
-export const MOCK_TABLE_DATA: TableRow[] = Array(6).fill(null).map((_, i) => ({
-  id: `row-${i}`,
-  name: 'GF2-PMS1-E114KJM9013D',
-  collectionTime: '2011-11-10 15:00:00',
-  storageTime: '2011-11-10 15:00:00',
-  isChecked: i === 1 || i === 5,
-}));
+/** 数据列表「入库主题」可选项（与 DataThemePanel 树结构对应） */
+export const DATA_THEME_BIND_OPTIONS: DataThemeBindOption[] = [
+  { id: 'geo-admin', path: '基础地理 / 行政区划' },
+  { id: 'geo-poi', path: '基础地理 / 地名地址 / POI' },
+  { id: 'geo-aoi', path: '基础地理 / 地名地址 / AOI' },
+  { id: 'geo-map-notes', path: '基础地理 / 地图服务 / 注记地图' },
+  { id: 'geo-map-image', path: '基础地理 / 地图服务 / 影像地图' },
+  { id: 'geo-map-vector', path: '基础地理 / 地图服务 / 电子地图' },
+  { id: 'geo-map-terrain', path: '基础地理 / 地图服务 / 地形' },
+  { id: 'geo-map-placename', path: '基础地理 / 地图服务 / 地名' },
+  { id: 'geo-3d-white', path: '基础地理 / 实景三维 / 白模' },
+  { id: 'geo-3d-oblique', path: '基础地理 / 实景三维 / 倾斜摄影' },
+  { id: 'geo-3d-bim', path: '基础地理 / 实景三维 / BIM' },
+  { id: 'geo-3d-cim', path: '基础地理 / 实景三维 / CIM' },
+  { id: 'geo-survey-other', path: '基础地理 / 其他测绘数据' },
+  { id: 'rs-sat-s3', path: '遥感遥测 / 卫星遥感 / 哨兵三号' },
+  { id: 'rs-sat-s1', path: '遥感遥测 / 卫星遥感 / 哨兵一号' },
+  { id: 'rs-sat-s2', path: '遥感遥测 / 卫星遥感 / 哨兵二号' },
+];
+
+const DEFAULT_THEME_IDS = DATA_THEME_BIND_OPTIONS.map((o) => o.id);
+
+// Table Data（数据总库列表）
+export const MOCK_TABLE_DATA: TableRow[] = [
+  {
+    id: 'row-0',
+    name: '湖北省10米卫星遥感影像20251001',
+    dataType: 'tiff',
+    ingestTime: '2026-05-08 17:35:11',
+    dataVolume: '8.26 GB',
+    publishStatus: '已发布',
+    listingStatus: 'not_listed',
+    isChecked: false,
+    themeNodeId: DEFAULT_THEME_IDS[0],
+    adminDivision: '湖北省',
+    description:
+      '湖北省全域10米分辨率多光谱卫星影像成果，适用于国土监测、要素提取与专题制图，坐标系与省级基础测绘一致。',
+    tags: ['遥感影像', '卫星', '10米', '全省'],
+  },
+  {
+    id: 'row-1',
+    name: '大冶市0.8米卫星遥感影像20250901',
+    dataType: 'tiff',
+    ingestTime: '2026-05-07 14:22:03',
+    dataVolume: '10.77 GB',
+    publishStatus: '已发布',
+    listingStatus: 'not_listed',
+    isChecked: true,
+    themeNodeId: DEFAULT_THEME_IDS[1],
+    adminDivision: '黄石市 · 大冶市',
+    description:
+      '大冶市域亚米级真彩色影像，可用于城市规划精细建模、三维仿真底图及重大项目选址论证。',
+    tags: ['亚米级', '真彩色', '县级'],
+  },
+  {
+    id: 'row-2',
+    name: '湖北省30米数字高程模型2015',
+    dataType: 'tiff',
+    ingestTime: '2026-05-06 09:10:00',
+    dataVolume: '3.42 GB',
+    publishStatus: '已发布',
+    listingStatus: 'not_listed',
+    isChecked: false,
+    themeNodeId: DEFAULT_THEME_IDS[2],
+    adminDivision: '湖北省',
+    description:
+      '全省统一基准下的30米分辨率DEM，适用于水文分析、坡度坡向计算及大范围地形可视化。',
+    tags: ['DEM', '地形', '栅格'],
+  },
+  {
+    id: 'row-3',
+    name: '江汉平原农作物长势遥感监测202507',
+    dataType: 'tiff',
+    ingestTime: '2026-05-05 11:45:30',
+    dataVolume: '15.20 GB',
+    publishStatus: '已发布',
+    listingStatus: 'not_listed',
+    isChecked: false,
+    themeNodeId: DEFAULT_THEME_IDS[3],
+    adminDivision: '江汉平原相关市县',
+    description:
+      '基于多时相植被指数反演的作物长势监测成果，支撑农业估产、干旱预警与种植结构调研。',
+    tags: ['农业', 'NDVI', '平原'],
+  },
+  {
+    id: 'row-4',
+    name: '武汉市主城区夜光遥感影像202506',
+    dataType: 'tiff',
+    ingestTime: '2026-05-04 16:01:22',
+    dataVolume: '6.08 GB',
+    publishStatus: '已发布',
+    listingStatus: 'not_listed',
+    isChecked: false,
+    themeNodeId: DEFAULT_THEME_IDS[4],
+    adminDivision: '武汉市',
+    description:
+      '夜间灯光强度与建成区扩张监测数据，可用于能耗热点识别、城镇化进程评估与城市体检指标。',
+    tags: ['夜光', '城市', '监测'],
+  },
+  {
+    id: 'row-5',
+    name: '长江流域水体提取成果栅格202508',
+    dataType: 'tiff',
+    ingestTime: '2026-05-03 08:55:44',
+    dataVolume: '22.31 GB',
+    publishStatus: '已发布',
+    listingStatus: 'not_listed',
+    isChecked: true,
+    themeNodeId: DEFAULT_THEME_IDS[5],
+    adminDivision: '长江流域（湖北省）',
+    description:
+      '水体范围与岸线提取成果，覆盖长江湖北段干支流及附属湖泊，适用于防洪预案编制与生态红线校核。',
+    tags: ['水体', '长江', '生态'],
+  },
+  {
+    id: 'row-6',
+    name: '鄂西山区森林资源监测影像202509',
+    dataType: 'tiff',
+    ingestTime: '2026-05-02 13:20:18',
+    dataVolume: '12.05 GB',
+    publishStatus: '已发布',
+    listingStatus: 'listed',
+    isChecked: false,
+    themeNodeId: DEFAULT_THEME_IDS[6],
+    adminDivision: '鄂西山区',
+    description:
+      '鄂西山地林区多时相影像与专题分类成果，支撑林地变更调查、碳汇核算与地质灾害隐患识别。',
+    tags: ['林业', '山地', '监测'],
+  },
+];

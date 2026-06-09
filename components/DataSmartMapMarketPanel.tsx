@@ -47,6 +47,7 @@ import { GoogleMapLayer, TableView, SummaryIndicator, BarChartIndicator } from '
 import { MiniBaseMapSwitcher } from './MiniBaseMapSwitcher';
 import { TimePlayerProvider } from '../modules/timePlayer/TimePlayerContext';
 import { TimePlayer } from '../modules/timePlayer/TimePlayer';
+import { PaginationBar } from './PaginationBar';
 import { 
     ResponsiveContainer, 
     BarChart, 
@@ -160,10 +161,27 @@ export const DataSmartMapMarketPanel: React.FC<{ marketTree: MarketNode[], setMa
     return MOCK_IMAGERY.filter(tile => {
       if (activeTagName !== '全部' && !tile.tags.includes(activeTagName)) return false;
       if (!q) return true;
-      const haystack = `${tile.title} ${tile.description} ${(tile.tags || []).join(' ')}`.toLowerCase();
+      const haystack = `${tile.code} ${tile.description} ${(tile.tags || []).join(' ')}`.toLowerCase();
       return haystack.includes(q);
     });
   }, [activeTagName, sceneSearchQuery]);
+
+  const [mapMarketPage, setMapMarketPage] = useState(1);
+  const [mapMarketPageSize, setMapMarketPageSize] = useState(12);
+
+  const pagedFilteredImagery = useMemo(() => {
+    const start = (mapMarketPage - 1) * mapMarketPageSize;
+    return filteredImagery.slice(start, start + mapMarketPageSize);
+  }, [filteredImagery, mapMarketPage, mapMarketPageSize]);
+
+  useEffect(() => {
+    setMapMarketPage(1);
+  }, [activeTagName, sceneSearchQuery]);
+
+  useEffect(() => {
+    const tp = Math.max(1, Math.ceil(filteredImagery.length / mapMarketPageSize));
+    setMapMarketPage((p) => Math.min(p, tp));
+  }, [filteredImagery.length, mapMarketPageSize]);
 
   // Map state for earth view
   const [currentZoom, setCurrentZoom] = useState(5);
@@ -811,13 +829,13 @@ export const DataSmartMapMarketPanel: React.FC<{ marketTree: MarketNode[], setMa
             </div>
           ) : viewMode === 'list' ? (
             <div className="flex flex-col gap-4 animate-slideUp max-w-7xl mx-auto">
-              {filteredImagery.map(item => (
-                <ImageryListItem key={item.id} tile={item} onOpenPreview={() => handleOpenPreview(item)} />
+              {pagedFilteredImagery.map(item => (
+                  <ImageryListItem key={item.id} tile={item} onOpenPreview={() => handleOpenPreview(item)} />
               ))}
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-5 animate-slideUp">
-              {filteredImagery.map(item => (
+              {pagedFilteredImagery.map(item => (
                   <ImageryCard key={item.id} tile={item} onOpenPreview={() => handleOpenPreview(item)} />
               ))}
             </div>
@@ -825,17 +843,18 @@ export const DataSmartMapMarketPanel: React.FC<{ marketTree: MarketNode[], setMa
         </div>
 
         {viewMode !== 'earth' && (
-          <footer className="h-14 bg-white border-t border-slate-100 px-6 flex items-center justify-between text-sm flex-shrink-0">
-              <div className="text-slate-400 font-medium">共 {filteredImagery.length} 条</div>
-              <div className="flex items-center gap-4">
-                  <div className="px-3 py-1.5 border border-slate-200 rounded text-slate-600 text-xs flex items-center gap-4 bg-white cursor-pointer hover:border-slate-300">12条/页 <ChevronDown size={14} className="text-slate-300" /></div>
-                  <div className="flex items-center gap-1.5">
-                      <button className="w-8 h-8 flex items-center justify-center text-slate-300 hover:text-slate-600 bg-slate-50 border border-slate-100 rounded"><ChevronLeft size={16} /></button>
-                      <button className="w-8 h-8 flex items-center justify-center bg-blue-600 text-white rounded font-bold text-xs">1</button>
-                      <button className="w-8 h-8 flex items-center justify-center text-slate-500 border border-slate-100 rounded text-xs font-medium">2</button>
-                      <button className="w-8 h-8 flex items-center justify-center text-slate-400 border border-slate-100 rounded"><ChevronRight size={16} /></button>
-                  </div>
-              </div>
+          <footer className="flex-shrink-0 border-t border-slate-100 bg-white px-6 py-3">
+              <PaginationBar
+                total={filteredImagery.length}
+                page={mapMarketPage}
+                pageSize={mapMarketPageSize}
+                onPageChange={setMapMarketPage}
+                onPageSizeChange={(s) => {
+                  setMapMarketPageSize(s);
+                  setMapMarketPage(1);
+                }}
+                pageSizeOptions={[12, 24, 48]}
+              />
           </footer>
         )}
 

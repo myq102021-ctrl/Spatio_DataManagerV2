@@ -1,5 +1,5 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Search, 
   X, 
@@ -17,8 +17,6 @@ import {
   AlertTriangle,
   FileText,
   Clock,
-  ChevronLeft,
-  ChevronRight,
   Send,
   ListOrdered,
   Info,
@@ -31,6 +29,7 @@ import { APICreationWizard } from './APICreationWizard';
 import { APIScriptWizard } from './APIScriptWizard';
 import { APISpatialWizard } from './APISpatialWizard';
 import { ServiceDetailView } from './ServiceDetailView';
+import { PaginationBar } from './PaginationBar';
 
 // 定义目录数据结构
 export interface DirectoryNode {
@@ -103,6 +102,16 @@ export const ServiceDevelopmentPanel: React.FC<ServiceDevelopmentPanelProps> = (
       return matchSearch && api.dirId === activeDirectoryId;
     });
   }, [activeTab, apiData, activeDirectoryId, searchText]);
+
+  const paginatedData = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return (filteredData || []).slice(start, start + pageSize);
+  }, [filteredData, currentPage, pageSize]);
+
+  useEffect(() => {
+    const tp = Math.max(1, Math.ceil((filteredData || []).length / pageSize));
+    setCurrentPage((p) => Math.min(p, tp));
+  }, [filteredData.length, pageSize]);
 
   const offlineCount = (apiData || []).filter(a => a.status === 'offline').length;
   const onlineCount = (apiData || []).filter(a => a.status === 'online').length;
@@ -409,7 +418,7 @@ export const ServiceDevelopmentPanel: React.FC<ServiceDevelopmentPanelProps> = (
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
-                {(filteredData || []).map((api, index) => (
+                {(paginatedData || []).map((api, index) => (
                   <tr 
                     key={api.id} 
                     className={`hover:bg-slate-50 transition-colors group ${selectedIds.has(api.id) ? 'bg-blue-50/30' : ''}`}
@@ -422,7 +431,9 @@ export const ServiceDevelopmentPanel: React.FC<ServiceDevelopmentPanelProps> = (
                           onChange={() => handleSelectRow(api.id)}
                         />
                     </td>
-                    <td className="p-4 text-slate-400 font-medium tabular-nums">{index + 1}</td>
+                    <td className="p-4 text-slate-400 font-medium tabular-nums">
+                      {(currentPage - 1) * pageSize + index + 1}
+                    </td>
                     <td className="p-4 text-slate-800 font-bold tracking-tight">
                         <span onClick={() => handleViewDetail(api)} className="hover:text-blue-600 cursor-pointer">{api.name}</span>
                     </td>
@@ -452,19 +463,17 @@ export const ServiceDevelopmentPanel: React.FC<ServiceDevelopmentPanelProps> = (
                 </div>
             )}
           </div>
-          <div className="flex items-center justify-between mt-4 px-2 select-none text-[13px] text-slate-500">
-            <div>共 <span className="font-medium">{(filteredData || []).length}</span> 条</div>
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2 px-3 py-1.5 border border-slate-200 rounded-lg bg-white hover:bg-slate-50 cursor-pointer">
-                <span>{pageSize}条/页</span>
-                <ChevronDown size={14} className="text-slate-400" />
-              </div>
-              <div className="flex gap-1.5">
-                <button disabled={currentPage === 1} className="w-8 h-8 flex items-center justify-center border border-slate-200 rounded-lg text-slate-400 hover:text-blue-600 disabled:opacity-30"><ChevronLeft size={16} /></button>
-                <button className="w-8 h-8 flex items-center justify-center bg-blue-600 text-white rounded-lg font-bold shadow-md shadow-blue-100">1</button>
-                <button className="w-8 h-8 flex items-center justify-center border border-slate-200 rounded-lg text-slate-400 hover:text-blue-600 disabled:opacity-30"><ChevronRight size={16} /></button>
-              </div>
-            </div>
+          <div className="mt-4 px-2 select-none">
+            <PaginationBar
+              total={(filteredData || []).length}
+              page={currentPage}
+              pageSize={pageSize}
+              onPageChange={setCurrentPage}
+              onPageSizeChange={(s) => {
+                setPageSize(s);
+                setCurrentPage(1);
+              }}
+            />
           </div>
         </div>
       </div>

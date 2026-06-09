@@ -1,13 +1,11 @@
 
-import React, { useState } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
     Search, 
     Eye, 
     CheckCircle2, 
     MinusCircle, 
     ChevronDown, 
-    ChevronLeft, 
-    ChevronRight,
     ShoppingBag,
     Database,
     X,
@@ -19,6 +17,7 @@ import {
     MessageSquare
 } from 'lucide-react';
 import { ApplicationRecord } from '../types';
+import { PaginationBar } from './PaginationBar';
 
 interface AuditApplicationPanelProps {
     records: ApplicationRecord[];
@@ -29,11 +28,32 @@ export const AuditApplicationPanel: React.FC<AuditApplicationPanelProps> = ({ re
     const [searchText, setSearchText] = useState('');
     const [selectedRecord, setSelectedRecord] = useState<ApplicationRecord | null>(null);
     const [auditOpinion, setAuditOpinion] = useState('');
+    const [auditPage, setAuditPage] = useState(1);
+    const [auditPageSize, setAuditPageSize] = useState(10);
 
-    const filteredRecords = records.filter(r => 
-        r.serviceName.toLowerCase().includes(searchText.toLowerCase()) || 
-        r.applicant?.toLowerCase().includes(searchText.toLowerCase())
+    const filteredRecords = useMemo(
+        () =>
+            records.filter(
+                (r) =>
+                    r.serviceName.toLowerCase().includes(searchText.toLowerCase()) ||
+                    r.applicant?.toLowerCase().includes(searchText.toLowerCase()),
+            ),
+        [records, searchText],
     );
+
+    const pagedRecords = useMemo(() => {
+        const start = (auditPage - 1) * auditPageSize;
+        return filteredRecords.slice(start, start + auditPageSize);
+    }, [filteredRecords, auditPage, auditPageSize]);
+
+    useEffect(() => {
+        setAuditPage(1);
+    }, [searchText]);
+
+    useEffect(() => {
+        const tp = Math.max(1, Math.ceil(filteredRecords.length / auditPageSize));
+        setAuditPage((p) => Math.min(p, tp));
+    }, [filteredRecords.length, auditPageSize]);
 
     const handleOpenDrawer = (record: ApplicationRecord) => {
         setSelectedRecord(record);
@@ -88,7 +108,7 @@ export const AuditApplicationPanel: React.FC<AuditApplicationPanelProps> = ({ re
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50">
-                        {filteredRecords.map((record) => (
+                        {pagedRecords.map((record) => (
                             <tr key={record.id} className="hover:bg-slate-50/50 transition-colors">
                                 <td className="p-4 pl-12 text-slate-700 font-medium max-w-[280px] truncate" title={record.serviceName}>{record.serviceName}</td>
                                 <td className="p-4 text-slate-500 font-mono">{record.applyTime}</td>
@@ -144,18 +164,17 @@ export const AuditApplicationPanel: React.FC<AuditApplicationPanelProps> = ({ re
             </div>
 
             {/* Pagination Footer */}
-            <div className="flex items-center justify-between p-4 px-8 bg-white border-t border-slate-100 text-[13px] text-slate-500">
-                <div>共 <span className="font-bold text-slate-800">{filteredRecords.length}</span> 条记录</div>
-                <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-1.5 px-2 py-1 border border-slate-200 rounded-lg cursor-pointer hover:bg-slate-50">
-                        10条/页 <ChevronDown size={14} className="text-slate-400" />
-                    </div>
-                    <div className="flex gap-1">
-                        <button className="p-1 hover:bg-slate-100 rounded disabled:opacity-20"><ChevronLeft size={16} /></button>
-                        <button className="w-7 h-7 bg-blue-600 text-white rounded font-bold shadow-sm">1</button>
-                        <button className="p-1 hover:bg-slate-100 rounded disabled:opacity-20"><ChevronRight size={16} /></button>
-                    </div>
-                </div>
+            <div className="border-t border-slate-100 bg-white p-4 px-8">
+                <PaginationBar
+                    total={filteredRecords.length}
+                    page={auditPage}
+                    pageSize={auditPageSize}
+                    onPageChange={setAuditPage}
+                    onPageSizeChange={(s) => {
+                        setAuditPageSize(s);
+                        setAuditPage(1);
+                    }}
+                />
             </div>
 
             {/* Drawer Detail View */}

@@ -14,9 +14,7 @@ import {
   Check,
   FolderTree,
   Hash,
-  ChevronLeft,
   Clock,
-  ChevronRight as ChevronRightIcon,
   Eye,
   ArrowRightCircle
 } from 'lucide-react';
@@ -24,6 +22,7 @@ import { APIRow } from '../constants';
 import { DirectoryNode } from './ServiceDevelopmentPanel';
 import { ServiceDetailView } from './ServiceDetailView';
 import { ApplicationRecord } from '../types';
+import { PaginationBar } from './PaginationBar';
 
 interface ServiceMarketPanelProps {
   apiData: APIRow[];
@@ -334,33 +333,18 @@ export const ServiceMarketPanel: React.FC<ServiceMarketPanelProps> = ({ apiData 
 
           {/* Pagination */}
           {(filteredAllOnlineServices || []).length > 0 && (
-            <div className="flex items-center justify-between p-4 px-8 bg-white border-t border-slate-100 text-[13px] text-slate-500 select-none">
-              <div>共 <span className="font-bold text-slate-800">{(filteredAllOnlineServices || []).length}</span> 条</div>
-              <div className="flex items-center gap-4">
-                <div className="flex items-center gap-1.5 px-2.5 py-1.5 border border-slate-200 rounded text-[12px] text-slate-600 cursor-pointer hover:bg-slate-50 hover:border-blue-200 transition-all">
-                  {pageSize}条/页 <ChevronDown size={14} className="text-slate-300" />
-                </div>
-                <div className="flex gap-1 items-center">
-                  <button 
-                    disabled={currentPage === 1} 
-                    onClick={() => setCurrentPage(p => p - 1)} 
-                    className="p-1.5 border border-slate-200 text-slate-400 rounded hover:bg-slate-50 hover:text-blue-600 disabled:opacity-30 disabled:hover:bg-transparent"
-                  >
-                    <ChevronLeft size={16} />
-                  </button>
-                  <button className="w-8 h-8 bg-blue-600 text-white rounded font-bold text-[13px] shadow-md shadow-blue-100">{currentPage}</button>
-                  <button 
-                    disabled={currentPage === totalPages} 
-                    onClick={() => setCurrentPage(p => p + 1)} 
-                    className="p-1.5 border border-slate-200 text-slate-400 rounded hover:bg-slate-50 hover:text-blue-600 disabled:opacity-30 disabled:hover:bg-transparent"
-                  >
-                    <ChevronRightIcon size={16} />
-                  </button>
-                </div>
-                <div className="flex items-center gap-2 text-[13px] text-slate-500">
-                    前往 <input type="text" className="w-10 h-8 border border-slate-200 rounded text-center outline-none focus:border-blue-400 font-bold text-blue-600" defaultValue={currentPage} /> 页
-                </div>
-              </div>
+            <div className="border-t border-slate-100 bg-white p-4 px-8 select-none">
+              <PaginationBar
+                total={(filteredAllOnlineServices || []).length}
+                page={currentPage}
+                pageSize={pageSize}
+                onPageChange={setCurrentPage}
+                onPageSizeChange={(s) => {
+                  setPageSize(s);
+                  setCurrentPage(1);
+                }}
+                pageSizeOptions={[9, 12, 24, 48]}
+              />
             </div>
           )}
         </div>

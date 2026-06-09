@@ -1,5 +1,5 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
     Search, 
     FileText, 
@@ -7,8 +7,6 @@ import {
     CheckCircle2, 
     XCircle, 
     ChevronDown, 
-    ChevronLeft, 
-    ChevronRight,
     Filter,
     ExternalLink,
     MoreHorizontal,
@@ -27,6 +25,7 @@ import {
 } from 'lucide-react';
 import { ApplicationRecord } from '../types';
 import { APIRow } from '../constants';
+import { PaginationBar } from './PaginationBar';
 
 interface MyApplicationsPanelProps {
     records: ApplicationRecord[];
@@ -37,6 +36,8 @@ export const MyApplicationsPanel: React.FC<MyApplicationsPanelProps> = ({ record
     const [activeTab, setActiveTab] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
     const [searchText, setSearchText] = useState('');
     const [selectedRecord, setSelectedRecord] = useState<ApplicationRecord | null>(null);
+    const [myAppPage, setMyAppPage] = useState(1);
+    const [myAppPageSize, setMyAppPageSize] = useState(10);
 
     const filteredRecords = useMemo(() => {
         return records.filter(r => {
@@ -45,6 +46,20 @@ export const MyApplicationsPanel: React.FC<MyApplicationsPanelProps> = ({ record
             return matchStatus && matchSearch;
         });
     }, [records, activeTab, searchText]);
+
+    const pagedRecords = useMemo(() => {
+        const start = (myAppPage - 1) * myAppPageSize;
+        return filteredRecords.slice(start, start + myAppPageSize);
+    }, [filteredRecords, myAppPage, myAppPageSize]);
+
+    useEffect(() => {
+        setMyAppPage(1);
+    }, [activeTab, searchText]);
+
+    useEffect(() => {
+        const tp = Math.max(1, Math.ceil(filteredRecords.length / myAppPageSize));
+        setMyAppPage((p) => Math.min(p, tp));
+    }, [filteredRecords.length, myAppPageSize]);
 
     const stats = {
         all: records.length,
@@ -99,7 +114,7 @@ export const MyApplicationsPanel: React.FC<MyApplicationsPanelProps> = ({ record
             <div className="flex-1 overflow-y-auto custom-scrollbar p-8">
                 {filteredRecords.length > 0 ? (
                     <div className="max-w-6xl mx-auto space-y-4">
-                        {filteredRecords.map((record) => (
+                        {pagedRecords.map((record) => (
                             <RecordCard 
                                 key={record.id} 
                                 record={record} 
@@ -118,13 +133,17 @@ export const MyApplicationsPanel: React.FC<MyApplicationsPanelProps> = ({ record
             </div>
 
             {/* Pagination Footer */}
-            <div className="px-8 py-4 bg-white border-t border-slate-100 flex items-center justify-between text-sm text-slate-500">
-                <div>共 <span className="font-bold text-slate-800">{filteredRecords.length}</span> 条申请</div>
-                <div className="flex items-center gap-2">
-                    <button className="p-1 hover:bg-slate-100 rounded disabled:opacity-30"><ChevronLeft size={18} /></button>
-                    <button className="w-8 h-8 bg-blue-600 text-white rounded-lg font-bold shadow-sm">1</button>
-                    <button className="p-1 hover:bg-slate-100 rounded disabled:opacity-30"><ChevronRight size={18} /></button>
-                </div>
+            <div className="border-t border-slate-100 bg-white px-8 py-4">
+                <PaginationBar
+                    total={filteredRecords.length}
+                    page={myAppPage}
+                    pageSize={myAppPageSize}
+                    onPageChange={setMyAppPage}
+                    onPageSizeChange={(s) => {
+                        setMyAppPageSize(s);
+                        setMyAppPage(1);
+                    }}
+                />
             </div>
 
             {/* Detail Drawer */}

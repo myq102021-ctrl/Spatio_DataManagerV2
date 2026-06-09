@@ -32,6 +32,7 @@ import {
     CheckSquare,
     Eye,
     EyeOff,
+    LocateFixed,
     X,
     Info,
     Table
@@ -389,7 +390,11 @@ out geom;`;
     return rows.find(r => r.type === 'relation' && r.id === relationId) ?? null;
 }
 
-export const SpatialSearchPanel: React.FC = () => {
+type SpatialSearchPanelProps = {
+    onOpenDataDetail?: (item: SearchResultItem) => void;
+};
+
+export const SpatialSearchPanel: React.FC<SpatialSearchPanelProps> = ({ onOpenDataDetail }) => {
     const [resultPanelEntryMode, setResultPanelEntryMode] = useState<'expanded' | 'collapsed'>('expanded');
     const [activeAreaTab, setActiveAreaTab] = useState('draw');
     const [whereSql, setWhereSql] = useState('');
@@ -462,8 +467,8 @@ export const SpatialSearchPanel: React.FC = () => {
     const bboxLayerRef = useRef<L.Rectangle | null>(null);
     const resultFootprintLayerRef = useRef<L.FeatureGroup | null>(null);
     const resultFootprintByIdRef = useRef<Map<string, L.Polygon>>(new Map());
-    const focusedSpatialLayerRef = useRef<L.Layer | null>(null);
-    const focusedPreviewLayerRef = useRef<L.ImageOverlay | null>(null);
+    /** 查询结果多选时，每条选中数据对应一组地图高亮 + 可选影像预览 */
+    const selectionSpatialLayersRef = useRef<Map<string, { main: L.Layer; preview: L.ImageOverlay | null }>>(new Map());
     const footprintHoverLeaveTimerRef = useRef<number | null>(null);
     const resultListScrollRef = useRef<HTMLDivElement | null>(null);
     const resultListScrollTopRef = useRef(0);
@@ -522,14 +527,11 @@ export const SpatialSearchPanel: React.FC = () => {
                 resultFootprintLayerRef.current.remove();
                 resultFootprintLayerRef.current = null;
             }
-            if (focusedSpatialLayerRef.current) {
-                focusedSpatialLayerRef.current.remove();
-                focusedSpatialLayerRef.current = null;
-            }
-            if (focusedPreviewLayerRef.current) {
-                focusedPreviewLayerRef.current.remove();
-                focusedPreviewLayerRef.current = null;
-            }
+            selectionSpatialLayersRef.current.forEach((entry) => {
+                entry.main.remove();
+                if (entry.preview) entry.preview.remove();
+            });
+            selectionSpatialLayersRef.current.clear();
             if (footprintHoverLeaveTimerRef.current !== null) {
                 window.clearTimeout(footprintHoverLeaveTimerRef.current);
                 footprintHoverLeaveTimerRef.current = null;
@@ -925,14 +927,19 @@ export const SpatialSearchPanel: React.FC = () => {
     }, []);
 
     const clearFocusedSpatialView = useCallback(() => {
-        if (focusedSpatialLayerRef.current) {
-            focusedSpatialLayerRef.current.remove();
-            focusedSpatialLayerRef.current = null;
-        }
-        if (focusedPreviewLayerRef.current) {
-            focusedPreviewLayerRef.current.remove();
-            focusedPreviewLayerRef.current = null;
-        }
+        selectionSpatialLayersRef.current.forEach((entry) => {
+            entry.main.remove();
+            if (entry.preview) entry.preview.remove();
+        });
+        selectionSpatialLayersRef.current.clear();
+    }, []);
+
+    const removeSelectionSpatialLayer = useCallback((id: string) => {
+        const entry = selectionSpatialLayersRef.current.get(id);
+        if (!entry) return;
+        entry.main.remove();
+        if (entry.preview) entry.preview.remove();
+        selectionSpatialLayersRef.current.delete(id);
     }, []);
 
     const rotateLatLng = useCallback((lat: number, lng: number, centerLat: number, centerLng: number, rad: number): L.LatLngExpression => {
@@ -1122,7 +1129,31 @@ export const SpatialSearchPanel: React.FC = () => {
     };
 
     const toggleResultSelection = (id: string) => {
-        setSelectedResultIds(prev => (prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]));
+        setSelectedResultIds(prev => {
+            if (prev.includes(id)) {
+                const next = prev.filter(x => x !== id);
+                setChartItemId(cur => {
+                    if (cur !== id) return cur;
+                    return next.length ? next[next.length - 1] : null;
+                });
+                if (next.length === 0) {
+                    setChartPanelOpen(false);
+                    if (mapHintClearTimerRef.current !== null) {
+                        window.clearTimeout(mapHintClearTimerRef.current);
+                        mapHintClearTimerRef.current = null;
+                    }
+                    setMapLoadHint('');
+                }
+                return next;
+            }
+            const next = [...prev, id];
+            setChartItemId(id);
+            setChartPanelOpen(true);
+            queueMicrotask(() => {
+                flyToResultItem(id);
+            });
+            return next;
+        });
     };
 
     const toggleResultVisibility = (id: string) => {
@@ -1243,17 +1274,6 @@ export const SpatialSearchPanel: React.FC = () => {
     const allCurrentPageSelected =
         pagedResults.length > 0 && pagedResults.every(item => selectedResultIds.includes(item.id));
 
-    const toggleSelectCurrentPage = () => {
-        const currentPageIds = pagedResults.map(item => item.id);
-        setSelectedResultIds(prev => {
-            if (currentPageIds.every(id => prev.includes(id))) {
-                return prev.filter(id => !currentPageIds.includes(id));
-            }
-            const merged = new Set([...prev, ...currentPageIds]);
-            return [...merged];
-        });
-    };
-
     const bandSynthContextItem = bandSynthContextItemId
         ? MOCK_SEARCH_RESULTS.find(x => x.id === bandSynthContextItemId) ?? null
         : null;
@@ -1289,84 +1309,202 @@ export const SpatialSearchPanel: React.FC = () => {
     const bandTint = (bandId: string | null) =>
         bandPlatform.bands.find(b => b.id === bandId)?.tint ?? 'bg-slate-400';
 
-    const activeChartItem = chartItemId
-        ? MOCK_SEARCH_RESULTS.find(x => x.id === chartItemId) ?? null
+    const resolvedChartItemId =
+        chartItemId && selectedResultIds.includes(chartItemId)
+            ? chartItemId
+            : selectedResultIds.length > 0
+              ? selectedResultIds[selectedResultIds.length - 1]
+              : null;
+    const activeChartItem = resolvedChartItemId
+        ? MOCK_SEARCH_RESULTS.find(x => x.id === resolvedChartItemId) ?? null
         : null;
     const chartRows = buildChartRowsByItem(activeChartItem);
     const chartTotalPages = Math.max(1, Math.ceil(chartRows.length / chartPageSize));
     const chartClampedPage = Math.min(chartPage, chartTotalPages);
     const chartPageRows = chartRows.slice((chartClampedPage - 1) * chartPageSize, chartClampedPage * chartPageSize);
 
-    const openChartForItem = useCallback((itemId: string) => {
-        setChartItemId(itemId);
-        setChartPanelOpen(true);
-        setChartPage(1);
-    }, []);
-
-    const inspectResultItem = useCallback((itemId: string) => {
+    /** 与查询结果勾选联动：多选多条即叠加多张图层；预览显隐随「隐藏」切换 */
+    useEffect(() => {
         const map = mapRef.current;
-        const item = MOCK_SEARCH_RESULTS.find(x => x.id === itemId);
-        openChartForItem(itemId);
-        if (!map || !item) return;
+        if (!map) return;
 
-        clearFocusedSpatialView();
+        const upsertPreview = (
+            id: string,
+            item: SearchResultItem,
+            mainLayer: L.Layer,
+            bounds: L.LatLngBounds,
+            centerForPoint: L.LatLng | null,
+            hiddenIds: string[]
+        ) => {
+            const prevEntry = selectionSpatialLayersRef.current.get(id);
+            if (prevEntry?.preview) {
+                prevEntry.preview.remove();
+            }
+            const hidePreview = hiddenIds.includes(id) || !item.hasSpatialPreview;
+            let preview: L.ImageOverlay | null = null;
+            if (!hidePreview) {
+                if (item.spatialShape === 'point' && centerForPoint) {
+                    const pointBounds = L.latLngBounds(
+                        [centerForPoint.lat - 0.045, centerForPoint.lng - 0.045],
+                        [centerForPoint.lat + 0.045, centerForPoint.lng + 0.045],
+                    );
+                    preview = L.imageOverlay(item.thumb, pointBounds, { opacity: 0.58 }).addTo(map);
+                } else if (bounds.isValid()) {
+                    preview = L.imageOverlay(item.thumb, bounds, { opacity: 0.56 }).addTo(map);
+                }
+                if (preview) setBaseMap(prev => (prev !== 'satellite' ? 'satellite' : prev));
+            }
+            selectionSpatialLayersRef.current.set(id, { main: mainLayer, preview });
+        };
+
+        const selectedSet = new Set(selectedResultIds);
+        selectionSpatialLayersRef.current.forEach((_, id) => {
+            if (!selectedSet.has(id)) {
+                removeSelectionSpatialLayer(id);
+            }
+        });
+
+        let anyNoSpatial = false;
+        for (const id of selectedResultIds) {
+            const item = MOCK_SEARCH_RESULTS.find(x => x.id === id);
+            if (!item) continue;
+
+            if (!item.hasSpatialInfo) {
+                anyNoSpatial = true;
+                continue;
+            }
+
+            const footprint = resultFootprintByIdRef.current.get(id);
+            const existing = selectionSpatialLayersRef.current.get(id);
+
+            if (existing) {
+                const polyB = footprint?.getBounds() ?? map.getBounds().pad(-0.62);
+                const ptCenter =
+                    item.spatialShape === 'point' && existing.main instanceof L.CircleMarker
+                        ? existing.main.getLatLng()
+                        : footprint?.getBounds().getCenter() ?? null;
+                upsertPreview(id, item, existing.main, polyB, ptCenter, hiddenResultIds);
+                continue;
+            }
+
+            const polyBounds = footprint?.getBounds() ?? map.getBounds().pad(-0.62);
+            if (item.spatialShape === 'point') {
+                const center = footprint?.getBounds().getCenter() ?? map.getCenter();
+                const marker = L.circleMarker(center, {
+                    radius: 8,
+                    color: '#ff7a18',
+                    weight: 2.5,
+                    fillColor: '#ffb25b',
+                    fillOpacity: 0.86,
+                }).addTo(map);
+                const pb = L.latLngBounds(
+                    [center.lat - 0.045, center.lng - 0.045],
+                    [center.lat + 0.045, center.lng + 0.045],
+                );
+                upsertPreview(id, item, marker, pb, center, hiddenResultIds);
+            } else {
+                const highlightRect = L.rectangle(polyBounds, {
+                    color: '#ff7a18',
+                    weight: 2.8,
+                    fillColor: '#ffb25b',
+                    fillOpacity: 0.2,
+                    dashArray: '8,5',
+                }).addTo(map);
+                upsertPreview(id, item, highlightRect, polyBounds, null, hiddenResultIds);
+            }
+        }
+
         if (mapHintClearTimerRef.current !== null) {
             window.clearTimeout(mapHintClearTimerRef.current);
             mapHintClearTimerRef.current = null;
         }
-
-        if (!item.hasSpatialInfo) {
-            setMapLoadHint('该数据没有空间位置信息，仅展示该数据图表视图');
+        if (anyNoSpatial && selectedResultIds.length > 0) {
+            setMapLoadHint('部分选中数据无空间位置，仅能在表中查看');
             mapHintClearTimerRef.current = window.setTimeout(() => {
                 setMapLoadHint('');
                 mapHintClearTimerRef.current = null;
             }, 2600);
+        } else {
+            setMapLoadHint('');
+        }
+    }, [selectedResultIds, hiddenResultIds, removeSelectionSpatialLayer, showResultPanel, pagedResults]);
+
+    useEffect(() => {
+        setChartPage(1);
+    }, [chartItemId]);
+
+    const handleOpenResultDetail = useCallback((itemId: string) => {
+        const item = MOCK_SEARCH_RESULTS.find(x => x.id === itemId);
+        if (!item) return;
+        resultListScrollTopRef.current = resultListScrollRef.current?.scrollTop ?? resultListScrollTopRef.current;
+        persistResultPanelState();
+        onOpenDataDetail?.(item);
+    }, [onOpenDataDetail, persistResultPanelState]);
+
+    const flyToResultItem = useCallback((itemId: string) => {
+        const map = mapRef.current;
+        const item = MOCK_SEARCH_RESULTS.find(x => x.id === itemId);
+        if (!map || !item) return;
+        if (!item.hasSpatialInfo) {
+            setMapLoadHint('该数据没有空间位置信息，无法飞往定位');
+            if (mapHintClearTimerRef.current !== null) window.clearTimeout(mapHintClearTimerRef.current);
+            mapHintClearTimerRef.current = window.setTimeout(() => {
+                setMapLoadHint('');
+                mapHintClearTimerRef.current = null;
+            }, 2200);
             return;
         }
-
-        setMapLoadHint('');
         const footprint = resultFootprintByIdRef.current.get(itemId);
         if (item.spatialShape === 'point') {
             const center = footprint?.getBounds().getCenter() ?? map.getCenter();
-            const marker = L.circleMarker(center, {
-                radius: 8,
-                color: '#ff7a18',
-                weight: 2.5,
-                fillColor: '#ffb25b',
-                fillOpacity: 0.86,
-            }).addTo(map);
-            focusedSpatialLayerRef.current = marker;
-            map.flyTo(center, Math.max(currentZoom, 12), { animate: true, duration: 0.55 });
-            if (item.hasSpatialPreview) {
-                const pointBounds = L.latLngBounds(
-                    [center.lat - 0.045, center.lng - 0.045],
-                    [center.lat + 0.045, center.lng + 0.045],
-                );
-                const preview = L.imageOverlay(item.thumb, pointBounds, { opacity: 0.58 }).addTo(map);
-                focusedPreviewLayerRef.current = preview;
-                if (baseMap !== 'satellite') setBaseMap('satellite');
-            }
+            map.flyTo(center, Math.max(currentZoom, 13), { animate: true, duration: 0.7 });
             return;
         }
+        const bounds = footprint?.getBounds();
+        if (bounds && bounds.isValid()) {
+            map.flyToBounds(bounds.pad(0.8), { animate: true, duration: 0.7 });
+        }
+    }, [currentZoom]);
 
-        const polyBounds = footprint?.getBounds() ?? map.getBounds().pad(-0.62);
-        const highlightRect = L.rectangle(polyBounds, {
-            color: '#ff7a18',
-            weight: 2.8,
-            fillColor: '#ffb25b',
-            fillOpacity: 0.2,
-            dashArray: '8,5',
-        }).addTo(map);
-        focusedSpatialLayerRef.current = highlightRect;
-        if (polyBounds.isValid()) {
-            map.fitBounds(polyBounds.pad(0.9), { animate: true });
-        }
-        if (item.hasSpatialPreview && polyBounds.isValid()) {
-            const preview = L.imageOverlay(item.thumb, polyBounds, { opacity: 0.56 }).addTo(map);
-            focusedPreviewLayerRef.current = preview;
-            if (baseMap !== 'satellite') setBaseMap('satellite');
-        }
-    }, [openChartForItem, clearFocusedSpatialView, currentZoom, baseMap]);
+    const inspectResultItem = useCallback((itemId: string) => {
+        setSelectedResultIds(prev => (prev.includes(itemId) ? prev : [...prev, itemId]));
+        setChartItemId(itemId);
+        setChartPanelOpen(true);
+        setChartPage(1);
+        queueMicrotask(() => {
+            flyToResultItem(itemId);
+        });
+    }, [flyToResultItem]);
+
+    const toggleSelectCurrentPage = useCallback(() => {
+        const currentPageIds = pagedResults.map(item => item.id);
+        setSelectedResultIds(prev => {
+            if (currentPageIds.every(id => prev.includes(id))) {
+                const next = prev.filter(id => !currentPageIds.includes(id));
+                setChartItemId(cur => {
+                    if (!cur) return null;
+                    if (next.includes(cur)) return cur;
+                    return next.length ? next[next.length - 1] : null;
+                });
+                if (next.length === 0) setChartPanelOpen(false);
+                return next;
+            }
+            const merged = [...prev];
+            let lastNew: string | null = null;
+            for (const id of currentPageIds) {
+                if (!merged.includes(id)) {
+                    merged.push(id);
+                    lastNew = id;
+                }
+            }
+            if (lastNew) {
+                setChartItemId(lastNew);
+                setChartPanelOpen(true);
+                queueMicrotask(() => flyToResultItem(lastNew));
+            }
+            return merged;
+        });
+    }, [pagedResults, flyToResultItem]);
 
     const openResultPanelByMode = useCallback((mode: 'expanded' | 'collapsed') => {
         setResultPanelEntryMode(mode);
@@ -1624,8 +1762,11 @@ export const SpatialSearchPanel: React.FC = () => {
                                                             type="button"
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
+                                                                const wasSelected = selectedResultIds.includes(item.id);
                                                                 toggleResultSelection(item.id);
-                                                                inspectResultItem(item.id);
+                                                                if (!wasSelected) {
+                                                                    inspectResultItem(item.id);
+                                                                }
                                                             }}
                                                             className={`w-4 h-4 rounded-[3px] border flex items-center justify-center transition-colors ${
                                                                 selectedResultIds.includes(item.id)
@@ -1655,28 +1796,50 @@ export const SpatialSearchPanel: React.FC = () => {
                                                         </div>
                                                         <div className="absolute inset-y-0 left-7 right-0 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
                                                             <div className="absolute inset-0 bg-white/35 backdrop-blur-[2px]" />
-                                                            <div className="absolute inset-0 flex items-center justify-center gap-2.5 pointer-events-auto px-1">
+                                                            <div className="absolute inset-0 flex items-center justify-center gap-1.5 pointer-events-auto px-1">
                                                                 <button
                                                                     type="button"
-                                                                    className="w-14 h-14 rounded-full border border-white/70 bg-white/78 shadow-md text-slate-600 hover:text-rose-500 transition-colors flex items-center justify-center"
+                                                                    className="w-11 h-11 rounded-full border border-white/70 bg-white/78 shadow-md text-slate-600 hover:text-rose-500 transition-colors flex items-center justify-center"
                                                                     title="收藏"
                                                                 >
-                                                                    <Heart size={20} />
+                                                                    <Heart size={16} />
                                                                 </button>
                                                                 <button
                                                                     type="button"
-                                                                    className="w-14 h-14 rounded-full border border-white/70 bg-white/78 shadow-md text-slate-600 hover:text-blue-600 transition-colors flex items-center justify-center"
+                                                                    className="w-11 h-11 rounded-full border border-white/70 bg-white/78 shadow-md text-slate-600 hover:text-blue-600 transition-colors flex items-center justify-center"
                                                                     title="申请"
                                                                 >
-                                                                    <FilePlus2 size={20} />
+                                                                    <FilePlus2 size={16} />
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        handleOpenResultDetail(item.id);
+                                                                    }}
+                                                                    className="w-11 h-11 rounded-full border border-white/70 bg-white/78 shadow-md text-slate-600 hover:text-indigo-600 transition-colors flex items-center justify-center"
+                                                                    title="详情"
+                                                                >
+                                                                    <Info size={16} />
                                                                 </button>
                                                                 <button
                                                                     type="button"
                                                                     onClick={() => toggleResultVisibility(item.id)}
-                                                                    className="w-14 h-14 rounded-full border border-white/70 bg-white/78 shadow-md text-slate-600 hover:text-violet-600 transition-colors flex items-center justify-center"
+                                                                    className="w-11 h-11 rounded-full border border-white/70 bg-white/78 shadow-md text-slate-600 hover:text-violet-600 transition-colors flex items-center justify-center"
                                                                     title={hiddenResultIds.includes(item.id) ? '显示' : '隐藏'}
                                                                 >
-                                                                    {hiddenResultIds.includes(item.id) ? <EyeOff size={20} /> : <Eye size={20} />}
+                                                                    {hiddenResultIds.includes(item.id) ? <EyeOff size={16} /> : <Eye size={16} />}
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        flyToResultItem(item.id);
+                                                                    }}
+                                                                    className="w-11 h-11 rounded-full border border-white/70 bg-white/78 shadow-md text-slate-600 hover:text-amber-600 transition-colors flex items-center justify-center"
+                                                                    title="飞往"
+                                                                >
+                                                                    <LocateFixed size={16} />
                                                                 </button>
                                                                 <button
                                                                     type="button"
@@ -1684,10 +1847,10 @@ export const SpatialSearchPanel: React.FC = () => {
                                                                         e.stopPropagation();
                                                                         openBandSynthesis(item.id);
                                                                     }}
-                                                                    className="w-14 h-14 rounded-full border border-white/70 bg-white/78 shadow-md text-slate-600 hover:text-emerald-600 transition-colors flex items-center justify-center"
+                                                                    className="w-11 h-11 rounded-full border border-white/70 bg-white/78 shadow-md text-slate-600 hover:text-emerald-600 transition-colors flex items-center justify-center"
                                                                     title="波段合成"
                                                                 >
-                                                                    <Layers size={20} />
+                                                                    <Layers size={16} />
                                                                 </button>
                                                             </div>
                                                         </div>
@@ -1741,7 +1904,7 @@ export const SpatialSearchPanel: React.FC = () => {
                     <div className="flex items-center justify-between gap-2.5 mb-3">
                         <div className="flex items-center gap-2.5">
                             <Database size={18} className="text-slate-800" />
-                            <h2 className="text-[16px] font-bold text-slate-800 tracking-tight">数据检索</h2>
+                            <h2 className="text-[16px] font-bold text-slate-800 tracking-tight">时空综合检索</h2>
                         </div>
                         <button
                             type="button"
@@ -2142,8 +2305,103 @@ export const SpatialSearchPanel: React.FC = () => {
                 </div>
             )}
 
-            {/* 2. Map area：左侧底图控件 + Leaflet 瓦片（默认 OSM） */}
-            <div ref={mapShellRef} className="flex-1 relative min-h-0 bg-slate-900 overflow-hidden">
+            {/* 2. Map area：顶栏数据详情（贴顶嵌入） + Leaflet 底图 */}
+            <div ref={mapShellRef} className="flex-1 flex flex-col min-h-0 bg-slate-900 overflow-hidden">
+                {chartPanelOpen && selectedResultIds.length > 0 && (
+                    <div className="flex-shrink-0 z-[545] bg-white border-b border-slate-200 shadow-[0_4px_12px_rgba(15,23,42,0.06)] pointer-events-auto flex flex-col max-h-[45vh] min-h-0">
+                        <div className="flex items-center gap-2 px-2 py-1.5 border-b border-slate-100 shrink-0 min-h-10">
+                            <Table size={14} className="text-blue-600 shrink-0 ml-1" />
+                            <div className="flex-1 flex gap-1 overflow-x-auto min-w-0 custom-scrollbar py-0.5">
+                                {selectedResultIds.map(tid => {
+                                    const tabItem = MOCK_SEARCH_RESULTS.find(x => x.id === tid);
+                                    const label = tabItem?.title ?? tid;
+                                    const active = resolvedChartItemId === tid;
+                                    return (
+                                        <button
+                                            key={tid}
+                                            type="button"
+                                            title={label}
+                                            onClick={() => {
+                                                setChartItemId(tid);
+                                                setChartPage(1);
+                                                queueMicrotask(() => flyToResultItem(tid));
+                                            }}
+                                            className={`shrink-0 max-w-[200px] truncate px-3 py-1.5 rounded-md text-[12px] font-semibold transition-colors border ${
+                                                active
+                                                    ? 'border-blue-500 bg-blue-50 text-blue-700 shadow-sm'
+                                                    : 'border-transparent text-slate-600 hover:bg-slate-50 hover:border-slate-200'
+                                            }`}
+                                        >
+                                            {label}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setChartPanelOpen(false)}
+                                className="w-8 h-8 rounded-md hover:bg-slate-100 text-slate-500 hover:text-slate-700 flex items-center justify-center shrink-0"
+                                title="收起数据表"
+                            >
+                                <X size={14} />
+                            </button>
+                        </div>
+                        <div className="flex-1 min-h-0 overflow-y-auto">
+                            <table className="w-full text-[12px]">
+                                <thead className="sticky top-0 bg-white z-[1] shadow-[0_1px_0_0_rgb(241_245_249)]">
+                                    <tr className="text-slate-400 border-b border-slate-100">
+                                        <th className="text-left font-semibold px-4 py-2 w-14">ID</th>
+                                        <th className="text-left font-semibold px-4 py-2">名称</th>
+                                        <th className="text-left font-semibold px-4 py-2 w-24">数值</th>
+                                        <th className="text-left font-semibold px-4 py-2 w-24">状态</th>
+                                        <th className="text-left font-semibold px-4 py-2 w-24">分类</th>
+                                        <th className="text-left font-semibold px-4 py-2 w-32">时间</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {chartPageRows.map(row => (
+                                        <tr key={row.id} className="border-b border-slate-50 text-slate-700 hover:bg-blue-50/40">
+                                            <td className="px-4 py-2">{row.id}</td>
+                                            <td className="px-4 py-2 font-bold text-slate-800">{row.name}</td>
+                                            <td className="px-4 py-2 font-semibold text-blue-600">{row.value}</td>
+                                            <td className="px-4 py-2">
+                                                <span className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-bold ${row.status === 'Active' ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>
+                                                    {row.status}
+                                                </span>
+                                            </td>
+                                            <td className="px-4 py-2 font-semibold">{row.category}</td>
+                                            <td className="px-4 py-2 text-slate-500">{row.time}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                        <div className="h-10 px-4 border-t border-slate-200 flex items-center justify-between text-[12px] text-slate-500 shrink-0 bg-slate-50/80">
+                            <span>共 {chartRows.length} 条数据</span>
+                            <div className="flex items-center gap-3">
+                                <button
+                                    type="button"
+                                    onClick={() => setChartPage(p => Math.max(1, p - 1))}
+                                    className="px-2 py-0.5 rounded border border-slate-200 hover:border-blue-200 hover:text-blue-600 disabled:opacity-40"
+                                    disabled={chartClampedPage === 1}
+                                >
+                                    上一页
+                                </button>
+                                <span className="font-semibold text-slate-700">{chartClampedPage} / {chartTotalPages}</span>
+                                <button
+                                    type="button"
+                                    onClick={() => setChartPage(p => Math.min(chartTotalPages, p + 1))}
+                                    className="px-2 py-0.5 rounded border border-slate-200 hover:border-blue-200 hover:text-blue-600 disabled:opacity-40"
+                                    disabled={chartClampedPage === chartTotalPages}
+                                >
+                                    下一页
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                <div className="flex-1 relative min-h-0 overflow-hidden">
                 <div
                     className="absolute inset-0 overflow-hidden"
                     style={{ perspective: '1400px' }}
@@ -2236,79 +2494,6 @@ export const SpatialSearchPanel: React.FC = () => {
                         />
                     </div>
 
-                    {chartPanelOpen && (
-                        <div className="absolute left-4 right-4 bottom-12 z-[540] pointer-events-auto">
-                            <div className="bg-white/95 backdrop-blur-xl border border-slate-200 rounded-xl shadow-2xl overflow-hidden">
-                                <div className="h-10 px-4 border-b border-slate-200 flex items-center justify-between">
-                                    <div className="flex items-center gap-2 text-[13px] font-bold text-slate-800 min-w-0">
-                                        <Table size={14} className="text-blue-600" />
-                                        <span className="truncate">数据详情：{activeChartItem?.title ?? '未选择'}</span>
-                                    </div>
-                                    <button
-                                        type="button"
-                                        onClick={() => setChartPanelOpen(false)}
-                                        className="w-6 h-6 rounded-md hover:bg-slate-100 text-slate-500 hover:text-slate-700 flex items-center justify-center"
-                                        title="关闭图表"
-                                    >
-                                        <X size={14} />
-                                    </button>
-                                </div>
-                                <div className="max-h-[240px] overflow-y-auto no-scrollbar">
-                                    <table className="w-full text-[12px]">
-                                        <thead className="sticky top-0 bg-white z-[1]">
-                                            <tr className="text-slate-400 border-b border-slate-100">
-                                                <th className="text-left font-semibold px-4 py-2 w-14">ID</th>
-                                                <th className="text-left font-semibold px-4 py-2">名称</th>
-                                                <th className="text-left font-semibold px-4 py-2 w-24">数值</th>
-                                                <th className="text-left font-semibold px-4 py-2 w-24">状态</th>
-                                                <th className="text-left font-semibold px-4 py-2 w-24">分类</th>
-                                                <th className="text-left font-semibold px-4 py-2 w-32">时间</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {chartPageRows.map(row => (
-                                                <tr key={row.id} className="border-b border-slate-50 text-slate-700 hover:bg-blue-50/40">
-                                                    <td className="px-4 py-2">{row.id}</td>
-                                                    <td className="px-4 py-2 font-bold text-slate-800">{row.name}</td>
-                                                    <td className="px-4 py-2 font-semibold text-blue-600">{row.value}</td>
-                                                    <td className="px-4 py-2">
-                                                        <span className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-bold ${row.status === 'Active' ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>
-                                                            {row.status}
-                                                        </span>
-                                                    </td>
-                                                    <td className="px-4 py-2 font-semibold">{row.category}</td>
-                                                    <td className="px-4 py-2 text-slate-500">{row.time}</td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
-                                </div>
-                                <div className="h-10 px-4 border-t border-slate-200 flex items-center justify-between text-[12px] text-slate-500">
-                                    <span>共 {chartRows.length} 条数据</span>
-                                    <div className="flex items-center gap-3">
-                                        <button
-                                            type="button"
-                                            onClick={() => setChartPage(p => Math.max(1, p - 1))}
-                                            className="px-2 py-0.5 rounded border border-slate-200 hover:border-blue-200 hover:text-blue-600 disabled:opacity-40"
-                                            disabled={chartClampedPage === 1}
-                                        >
-                                            上一页
-                                        </button>
-                                        <span className="font-semibold text-slate-700">{chartClampedPage} / {chartTotalPages}</span>
-                                        <button
-                                            type="button"
-                                            onClick={() => setChartPage(p => Math.min(chartTotalPages, p + 1))}
-                                            className="px-2 py-0.5 rounded border border-slate-200 hover:border-blue-200 hover:text-blue-600 disabled:opacity-40"
-                                            disabled={chartClampedPage === chartTotalPages}
-                                        >
-                                            下一页
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
                     {/* 空间信息条 */}
                     <div className="absolute bottom-0 left-0 right-0 h-9 bg-white/85 backdrop-blur-xl border-t border-slate-200/60 z-[500] flex items-center px-4 shadow-[0_-4px_12px_rgba(0,0,0,0.05)] pointer-events-none">
                         <div className="flex-1 flex items-center divide-x divide-slate-200 h-5">
@@ -2361,6 +2546,7 @@ export const SpatialSearchPanel: React.FC = () => {
                             </div>
                         </div>
                     </div>
+                </div>
                 </div>
             </div>
 

@@ -1,9 +1,7 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { 
   ChevronDown, 
   Hexagon, 
-  ChevronLeft, 
-  ChevronRight, 
   LayoutGrid, 
   LogOut, 
   Settings, 
@@ -14,6 +12,48 @@ import {
 } from 'lucide-react';
 import { MENU_ITEMS } from '../constants';
 import { MenuItem } from '../types';
+import { CollapseRailHandle } from './CollapseRailHandle';
+
+/** 记录用户侧栏收起/展开偏好，切换菜单或刷新后仍保持 */
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'spatio-platform-sidebar-collapsed';
+
+function readStoredSidebarCollapsed(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeStoredSidebarCollapsed(collapsed: boolean): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? '1' : '0');
+  } catch {
+    /* quota / private mode */
+  }
+}
+
+function menuHasActiveDescendant(item: MenuItem, activeMenuId: string): boolean {
+  if (!item.children?.length) return false;
+  return item.children.some(
+    (c) => c.id === activeMenuId || menuHasActiveDescendant(c, activeMenuId),
+  );
+}
+
+/** 收起态浮层：展开带三级结构的子菜单为可点击叶子项 */
+function flattenSelectableMenuItems(items: MenuItem[]): MenuItem[] {
+  const out: MenuItem[] = [];
+  for (const item of items) {
+    if (item.children?.length) {
+      out.push(...flattenSelectableMenuItems(item.children));
+    } else {
+      out.push(item);
+    }
+  }
+  return out;
+}
 
 interface SidebarProps {
   activeMenuId: string;
@@ -21,12 +61,55 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ activeMenuId, onMenuSelect }) => {
-  const [isCollapsed, setIsCollapsed] = useState(false);
-  const [expandedMenus, setExpandedMenus] = useState<Set<string>>(new Set(['data_integration', 'list', 'services', 'smart_map_parent', 'data_security']));
+  const [isCollapsed, setIsCollapsed] = useState(readStoredSidebarCollapsed);
+  const [expandedMenus, setExpandedMenus] = useState<Set<string>>(
+    new Set([
+      'resources',
+      'data_integration',
+      'spatial_ingestion',
+      'services',
+      'smart_map_parent',
+      'data_security',
+    ]),
+  );
   const [isProfileExpanded, setIsProfileExpanded] = useState(false);
-  
+  /** 收起态子菜单：用 fixed 定位，避免被菜单区域 overflow 裁剪，视觉上不再「压住」侧栏 */
+  const [collapsedFlyout, setCollapsedFlyout] = useState<MenuItem | null>(null);
+  const [collapsedFlyoutPos, setCollapsedFlyoutPos] = useState({ top: 0, left: 0 });
+  const menuScrollRef = useRef<HTMLDivElement>(null);
+  const menuTriggerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const flyoutCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // 用于实现点击外部关闭逻辑
   const profileRef = useRef<HTMLDivElement>(null);
+
+  const cancelFlyoutClose = () => {
+    if (flyoutCloseTimer.current) {
+      clearTimeout(flyoutCloseTimer.current);
+      flyoutCloseTimer.current = null;
+    }
+  };
+
+  const scheduleFlyoutClose = () => {
+    cancelFlyoutClose();
+    flyoutCloseTimer.current = setTimeout(() => {
+      setCollapsedFlyout(null);
+      flyoutCloseTimer.current = null;
+    }, 140);
+  };
+
+  const updateCollapsedFlyoutPosition = useCallback((itemId: string) => {
+    const el = menuTriggerRefs.current.get(itemId);
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setCollapsedFlyoutPos({ top: r.top + r.height / 2, left: r.right + 6 });
+  }, []);
+
+  const openCollapsedFlyout = (item: MenuItem) => {
+    cancelFlyoutClose();
+    updateCollapsedFlyoutPosition(item.id);
+    setCollapsedFlyout(item);
+  };
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -44,6 +127,40 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeMenuId, onMenuSelect }) 
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, []);
+
+  useEffect(() => {
+    if (!isCollapsed) setCollapsedFlyout(null);
+  }, [isCollapsed]);
+
+  useEffect(() => {
+    if (!collapsedFlyout || !isCollapsed) return;
+    const update = () => updateCollapsedFlyoutPosition(collapsedFlyout.id);
+    const sc = menuScrollRef.current;
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    sc?.addEventListener('scroll', update);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+      sc?.removeEventListener('scroll', update);
+    };
+  }, [collapsedFlyout, isCollapsed, updateCollapsedFlyoutPosition]);
+
+  useEffect(() => () => cancelFlyoutClose(), []);
+
+  useEffect(() => {
+    if (
+      activeMenuId === 'spatial_ingestion_single' ||
+      activeMenuId === 'spatial_ingestion_batch'
+    ) {
+      setExpandedMenus((prev) => {
+        const next = new Set(prev);
+        next.add('data_integration');
+        next.add('spatial_ingestion');
+        return next;
+      });
+    }
+  }, [activeMenuId]);
 
   const toggleExpand = (id: string) => {
     const next = new Set(expandedMenus);
@@ -68,19 +185,33 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeMenuId, onMenuSelect }) 
   return (
     <div 
         className={`
-            flex-shrink-0 flex flex-col h-full text-slate-800 select-none pt-8 relative z-20 
+            flex shrink-0 flex-col h-full text-slate-800 select-none pt-8 relative z-40 
             transition-all duration-500 ease-[cubic-bezier(0.4,0,0.2,1)]
-            bg-transparent
-            ${isCollapsed ? 'w-20' : 'w-64'}
+            bg-transparent overflow-visible
+            ${isCollapsed ? 'w-20 min-w-20' : 'w-64 min-w-64'}
         `}
     >
-      {/* Collapse Toggle Button */}
-      <button 
-        onClick={() => setIsCollapsed(!isCollapsed)}
-        className="absolute top-12 -right-3 z-30 w-6 h-6 rounded-full bg-white border border-slate-200/60 shadow-sm flex items-center justify-center text-slate-500 hover:text-blue-600 hover:scale-110 transition-all cursor-pointer outline-none"
-      >
-        {isCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
-      </button>
+      {/* 收缩手柄：侧栏右缘垂直居中，与面板收缩条同款胶囊样式 */}
+      <div className="pointer-events-none absolute inset-y-0 left-full z-30 w-0">
+        <div
+          className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-slate-200/70"
+          aria-hidden
+        />
+        <CollapseRailHandle
+          side="left"
+          collapsed={isCollapsed}
+          expandLabel="展开导航栏"
+          collapseLabel="收起导航栏"
+          onToggle={() => {
+            setIsCollapsed((prev) => {
+              const next = !prev;
+              writeStoredSidebarCollapsed(next);
+              return next;
+            });
+          }}
+          className="pointer-events-auto absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+        />
+      </div>
 
       {/* Logo Area */}
       <div className={`mb-10 flex items-center transition-all duration-300 ${isCollapsed ? 'justify-center px-0' : 'justify-start px-6 gap-3'}`}>
@@ -96,7 +227,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeMenuId, onMenuSelect }) 
       </div>
 
       {/* Menu Items - Changed custom-scrollbar to no-scrollbar */}
-      <div className="flex-1 overflow-y-auto px-3 space-y-1 no-scrollbar">
+      <div ref={menuScrollRef} className="flex-1 min-h-0 overflow-y-auto overflow-x-visible px-3 space-y-1 no-scrollbar">
         {MENU_ITEMS.map((item) => {
           if (item.type === 'header') {
             if (isCollapsed) return <div key={item.id} className="h-4" />;
@@ -109,42 +240,48 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeMenuId, onMenuSelect }) 
           }
 
           const isDirectlyActive = activeMenuId === item.id;
-          const hasActiveChild = item.children?.some(c => c.id === activeMenuId);
+          const hasActiveChild = menuHasActiveDescendant(item, activeMenuId);
+          /** 有子项选中时，一级仅展开不高亮 */
+          const isParentRowActive = isDirectlyActive && !hasActiveChild;
+
+          const hasSubmenu = !!(item.children && item.children.length > 0);
 
           return (
-            <div key={item.id}>
+            <div
+              key={item.id}
+              ref={(el) => {
+                if (el) menuTriggerRefs.current.set(item.id, el);
+                else menuTriggerRefs.current.delete(item.id);
+              }}
+              className="relative"
+              onMouseEnter={() => {
+                if (isCollapsed && hasSubmenu) openCollapsedFlyout(item);
+              }}
+              onMouseLeave={scheduleFlyoutClose}
+            >
                 <MenuRow 
                   item={item} 
                   isCollapsed={isCollapsed} 
-                  isActive={isDirectlyActive} 
-                  isChildActive={hasActiveChild} 
-                  isExpanded={expandedMenus.has(item.id)}
+                  isActive={isParentRowActive} 
+                  isExpanded={expandedMenus.has(item.id) || hasActiveChild}
                   onToggle={() => toggleExpand(item.id)}
                   onClick={() => {
                     if (!item.children || item.children.length === 0) {
                       onMenuSelect(item.id);
-                    } else {
+                    } else if (!isCollapsed) {
                       toggleExpand(item.id);
                     }
                   }}
                 />
                 {!isCollapsed && item.children && expandedMenus.has(item.id) && (
-                  <div className="mt-1 ml-9 border-l border-white/30 space-y-1 animate-fadeIn">
-                    {item.children.map(child => (
-                      <div 
-                        key={child.id}
-                        onClick={() => onMenuSelect(child.id)}
-                        className={`
-                          py-2.5 pr-4 pl-7 rounded-xl text-[16px] tracking-wide cursor-pointer transition-all flex items-center
-                          ${activeMenuId === child.id 
-                            ? 'bg-white/80 text-blue-700 shadow-sm font-bold ring-1 ring-black/5' 
-                            : 'text-slate-600/90 hover:bg-white/40 hover:text-slate-950 font-medium'}
-                        `}
-                      >
-                        {child.label}
-                      </div>
-                    ))}
-                  </div>
+                  <SubMenuTree
+                    items={item.children}
+                    depth={1}
+                    activeMenuId={activeMenuId}
+                    expandedMenus={expandedMenus}
+                    onToggleExpand={toggleExpand}
+                    onMenuSelect={onMenuSelect}
+                  />
                 )}
             </div>
           );
@@ -245,6 +382,134 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeMenuId, onMenuSelect }) 
             </div>
         </div>
       </div>
+
+      {isCollapsed && collapsedFlyout && collapsedFlyout.children && collapsedFlyout.children.length > 0 && (
+        <div
+          className="pointer-events-auto fixed z-[200] -translate-y-1/2 pl-3 -ml-3"
+          style={{ top: collapsedFlyoutPos.top, left: collapsedFlyoutPos.left }}
+          onMouseEnter={cancelFlyoutClose}
+          onMouseLeave={scheduleFlyoutClose}
+        >
+          <div className="rounded-[10px] bg-white py-3 px-4 min-w-[196px] shadow-[0_12px_40px_-8px_rgba(15,23,42,0.18)] ring-1 ring-slate-900/[0.06]">
+            <div className="mb-2.5 text-[11px] font-semibold tracking-wide text-slate-400 select-none">
+              {collapsedFlyout.label}
+            </div>
+            <div className="flex flex-col gap-0.5">
+              {flattenSelectableMenuItems(collapsedFlyout.children).map((child) => (
+                <button
+                  key={child.id}
+                  type="button"
+                  onClick={() => {
+                    cancelFlyoutClose();
+                    setCollapsedFlyout(null);
+                    onMenuSelect(child.id);
+                  }}
+                  className={`
+                    rounded-lg px-2.5 py-2 text-left text-[13px] font-bold tracking-wide transition-colors
+                    ${activeMenuId === child.id
+                      ? 'bg-blue-50 text-blue-700'
+                      : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}
+                  `}
+                >
+                  {child.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+interface SubMenuTreeProps {
+  items: MenuItem[];
+  depth: number;
+  activeMenuId: string;
+  expandedMenus: Set<string>;
+  onToggleExpand: (id: string) => void;
+  onMenuSelect: (id: string) => void;
+}
+
+const SubMenuTree: React.FC<SubMenuTreeProps> = ({
+  items,
+  depth,
+  activeMenuId,
+  expandedMenus,
+  onToggleExpand,
+  onMenuSelect,
+}) => {
+  const indent = depth === 1 ? 'ml-9' : 'ml-6';
+  return (
+    <div className={`mt-1 ${indent} border-l border-white/30 space-y-1 animate-fadeIn`}>
+      {items.map((child) => {
+        const hasNested = !!(child.children && child.children.length > 0);
+        const isLeafActive = activeMenuId === child.id;
+        const hasActiveNested = menuHasActiveDescendant(child, activeMenuId);
+        const isExpanded = expandedMenus.has(child.id) || hasActiveNested;
+
+        if (hasNested) {
+          return (
+            <div key={child.id}>
+              <button
+                type="button"
+                onClick={() => onToggleExpand(child.id)}
+                className={`
+                  flex w-full items-center justify-between gap-2 rounded-xl py-2.5 pr-4 pl-5 text-left transition-all
+                  ${hasActiveNested
+                    ? 'bg-white/60 text-blue-700 font-bold ring-1 ring-black/5'
+                    : 'text-slate-600/90 hover:bg-white/40 hover:text-slate-950 font-medium'}
+                `}
+              >
+                <span className="flex items-center gap-2 text-[15px] tracking-wide">
+                  {child.icon ? (
+                    <span className="flex h-4 w-4 shrink-0 items-center justify-center opacity-80">
+                      {child.icon}
+                    </span>
+                  ) : null}
+                  {child.label}
+                </span>
+                <ChevronDown
+                  className={`h-3.5 w-3.5 shrink-0 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                />
+              </button>
+              {isExpanded && child.children ? (
+                <SubMenuTree
+                  items={child.children}
+                  depth={depth + 1}
+                  activeMenuId={activeMenuId}
+                  expandedMenus={expandedMenus}
+                  onToggleExpand={onToggleExpand}
+                  onMenuSelect={onMenuSelect}
+                />
+              ) : null}
+            </div>
+          );
+        }
+
+        return (
+          <button
+            key={child.id}
+            type="button"
+            onClick={() => onMenuSelect(child.id)}
+            className={`
+              flex w-full items-center gap-2 rounded-xl py-2.5 pr-4 pl-5 text-left transition-all
+              ${isLeafActive
+                ? 'bg-white/80 text-blue-700 shadow-sm font-bold ring-1 ring-black/5'
+                : 'text-slate-600/90 hover:bg-white/40 hover:text-slate-950 font-medium'}
+            `}
+          >
+            {child.icon ? (
+              <span className="flex h-4 w-4 shrink-0 items-center justify-center opacity-80">
+                {child.icon}
+              </span>
+            ) : null}
+            <span className={`tracking-wide ${depth >= 2 ? 'text-[14px]' : 'text-[16px]'}`}>
+              {child.label}
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 };
@@ -253,26 +518,26 @@ interface MenuRowProps {
     item: MenuItem;
     isCollapsed: boolean;
     isActive: boolean;
-    isChildActive?: boolean;
     isExpanded: boolean;
     onToggle: () => void;
     onClick: () => void;
 }
 
-const MenuRow: React.FC<MenuRowProps> = ({ item, isCollapsed, isActive, isChildActive, isExpanded, onToggle, onClick }) => {
+const MenuRow: React.FC<MenuRowProps> = ({ item, isCollapsed, isActive, isExpanded, onToggle, onClick }) => {
+  const rowActive = isActive;
   return (
     <div className="group relative" onClick={onClick}>
       <div
         className={`
           flex items-center rounded-xl cursor-pointer transition-all duration-200
           ${isCollapsed ? 'justify-center py-3' : 'gap-4 pl-6 pr-4 py-3.5'}
-          ${isActive 
+          ${rowActive 
             ? 'bg-white/80 text-blue-700 shadow-sm font-bold ring-1 ring-black/5' 
             : 'text-slate-600/90 hover:bg-white/40 hover:text-slate-950 font-medium'}
         `}
       >
-        <div className={`flex-shrink-0 w-6 h-5 flex items-center justify-center transition-colors ${isActive ? 'text-blue-700' : 'text-slate-500 group-hover:text-slate-950'}`}>
-            {React.cloneElement(item.icon as React.ReactElement, { size: 20, strokeWidth: isActive ? 2.5 : 2 })}
+        <div className={`flex-shrink-0 w-6 h-5 flex items-center justify-center transition-colors ${rowActive ? 'text-blue-700' : 'text-slate-500 group-hover:text-slate-950'}`}>
+            {React.cloneElement(item.icon as React.ReactElement, { size: 20, strokeWidth: rowActive ? 2.5 : 2 })}
         </div>
         
         {!isCollapsed && (
@@ -282,7 +547,7 @@ const MenuRow: React.FC<MenuRowProps> = ({ item, isCollapsed, isActive, isChildA
         )}
         
         {!isCollapsed && item.children && (
-            <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''} ${isActive ? 'text-blue-700' : 'text-slate-500 group-hover:text-slate-950'}`} />
+            <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''} ${rowActive ? 'text-blue-700' : 'text-slate-500 group-hover:text-slate-950'}`} />
         )}
 
         {isActive && !isCollapsed && (!item.children || item.children.length === 0) && (

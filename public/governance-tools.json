@@ -1,0 +1,63 @@
+[
+  {
+    "id": "gt-1778665748075-sqiz88",
+    "mode": "custom",
+    "name": "stacapi",
+    "description": "用于生成stacapi",
+    "createdAt": "2026-05-13 17:49:08",
+    "updatedAt": "2026-05-13 17:49:08"
+  },
+  {
+    "id": "gt-1778637052298-zh9lvk",
+    "mode": "external",
+    "name": "Mapshaper",
+    "description": "地图数据简化、格式转换在线工具",
+    "link": "https://mapshaper.org/",
+    "createdAt": "2026-05-13 09:50:52",
+    "updatedAt": "2026-05-13 09:50:52"
+  },
+  {
+    "id": "gt-1778636299018-6xesq8",
+    "mode": "external",
+    "name": "GeoUtil",
+    "description": "All-in-one online geography toolkit for working with maps, coordinates, and geographic data!",
+    "link": "https://geoutil.com/",
+    "createdAt": "2026-05-13 09:38:19",
+    "updatedAt": "2026-05-13 09:38:19"
+  },
+  {
+    "id": "gt-1778635878320-tjkwk4",
+    "mode": "external",
+    "name": "MapJS",
+    "description": "地图数据在线查看与编辑",
+    "link": "https://mapjs.bimant.com/",
+    "createdAt": "2026-05-13 09:31:18",
+    "updatedAt": "2026-05-13 09:31:18"
+  },
+  {
+    "id": "gt-1778635688578-42z3l5",
+    "mode": "external",
+    "name": "QucikMapTools",
+    "description": "常见地图数据格式转换工具",
+    "link": "https://www.quickmaptools.com/",
+    "createdAt": "2026-05-13 09:28:08",
+    "updatedAt": "2026-05-13 09:28:08"
+  },
+  {
+    "id": "seed-1",
+    "mode": "external",
+    "name": "数据质量检测平台",
+    "description": "对接第三方质检引擎，支持规则配置与报告导出。",
+    "link": "https://example.com/quality",
+    "createdAt": "2026-05-01 10:00:00",
+    "updatedAt": "2026-05-01 10:00:00"
+  },
+  {
+    "id": "seed-2",
+    "mode": "custom",
+    "name": "治理规范速查",
+    "description": "内部数据分级分类与脱敏策略说明，供业务侧自助查阅。",
+    "createdAt": "2026-05-02 14:30:00",
+    "updatedAt": "2026-05-02 14:30:00"
+  }
+]

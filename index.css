@@ -65,6 +65,39 @@
   background: #cbd5e1;
 }
 
+/**
+ * 横向滚动条仅在鼠标位于该区域时显示（纵向不受影响；仍可横向滚动）
+ * WebKit/Blink：默认将横向 scrollbar 高度设为 0
+ */
+.scroll-x-hover-only:not(:hover)::-webkit-scrollbar:horizontal {
+  height: 0;
+}
+.scroll-x-hover-only:hover::-webkit-scrollbar:horizontal {
+  height: 6px;
+}
+
+/**
+ * 数据总库表格右侧固定「操作」列：向右延伸纯色 spread shadow，
+ * 盖住滚动容器右缘缝隙 / 滚动条槽位，避免左侧列「穿透」透出。
+ */
+.data-table-op-sticky-head {
+  box-shadow:
+    -10px 0 18px -8px rgba(15, 23, 42, 0.12),
+    24px 0 0 0 rgb(240 249 255);
+}
+
+.data-table-op-sticky-cell {
+  box-shadow:
+    -10px 0 18px -8px rgba(15, 23, 42, 0.08),
+    24px 0 0 0 rgb(255 255 255);
+}
+
+.data-table-op-row:hover .data-table-op-sticky-cell {
+  box-shadow:
+    -10px 0 18px -8px rgba(15, 23, 42, 0.08),
+    24px 0 0 0 rgb(248 250 252);
+}
+
 /* Flowing border animation for active components */
 @keyframes flowingBorder {
   0% { border-color: #3b82f6; box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.4); }

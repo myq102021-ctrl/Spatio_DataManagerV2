@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { DataThemePanel } from './components/DataThemePanel';
 import { DataTablePanel } from './components/DataTablePanel';
@@ -9,6 +9,9 @@ import { DataSmartMapMarketPanel } from './components/DataSmartMapMarketPanel';
 import { ProductionLinePanel } from './components/ProductionLinePanel';
 import { SpatialDataIngestionPanel } from './components/SpatialDataIngestionPanel';
 import { CreateIngestionTaskPanel } from './components/CreateIngestionTaskPanel';
+import { CloudDiskSelectionPage, type CloudFile } from './components/CloudDiskSelectionPage';
+import { getGf1cSceneDetail, isGf1cSceneTaskId } from './gf1cBatchIngestionMock';
+import type { IngestionBatchSubTaskEditContext } from './lib/ingestionBatchSubTaskEdit';
 import { DataStatsPanel } from './components/DataStatsPanel';
 import { ServiceDevelopmentPanel, DirectoryNode } from './components/ServiceDevelopmentPanel';
 import { ServiceMarketPanel } from './components/ServiceMarketPanel';
@@ -16,13 +19,16 @@ import { PersonalConsolePanel } from './components/PersonalConsolePanel';
 import { MyApplicationsPanel } from './components/MyApplicationsPanel';
 import { AuditApplicationPanel } from './components/AuditApplicationPanel';
 import { SpatialSearchPanel } from './components/SpatialSearchPanel';
+import { KnowledgeGraphSearchPanel } from './components/KnowledgeGraphSearchPanel';
 import { DataSensitivityPanel } from './components/DataSensitivityPanel';
 import { SensitiveDataConfigPanel } from './components/SensitiveDataConfigPanel';
 import { IdentificationRulesPanel } from './components/IdentificationRulesPanel';
+import { GovernanceToolsPanel } from './components/GovernanceToolsPanel';
 import { BusinessManagementPanel } from './components/BusinessManagementPanel';
 import { DataStandardPanel } from './components/DataStandardPanel';
+import { StandardCodeTablePanel } from './components/StandardCodeTablePanel';
 import { MOCK_API_DATA, APIRow } from './constants';
-import { ApplicationRecord, MarketNode } from './types';
+import { ApplicationRecord, MarketNode, TableRow } from './types';
 import { LayoutGrid } from 'lucide-react';
 
 /* Fix: Define initial directories and applications data with rich mock records */
@@ -75,6 +81,20 @@ const INITIAL_MARKET_TREE: MarketNode[] = [
   { id: 'ecology', label: '生态环境监测', count: 31 },
   { id: 'emergency', label: '应急指挥调度', count: 12 },
 ];
+
+const DATA_MARKET_FAVORITES_STORAGE_KEY = 'data-market-favorites-v1';
+
+function readDataMarketFavoriteIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DATA_MARKET_FAVORITES_STORAGE_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((x): x is string => typeof x === 'string'));
+  } catch {
+    return new Set();
+  }
+}
 
 const INITIAL_APPLICATIONS: ApplicationRecord[] = [
   {
@@ -183,17 +203,108 @@ const INITIAL_APPLICATIONS: ApplicationRecord[] = [
 function App() {
   const [activeMenuId, setActiveMenuId] = useState<string>('smart_map'); 
   const [viewMode, setViewMode] = useState<'list' | 'detail'>('list');
+  const [detailBackTarget, setDetailBackTarget] = useState<
+    'data_list' | 'public_data_market' | 'my_favorites' | 'spatio_temporal_search'
+  >('data_list');
+  /** 从数据总库/集市列表进入详情时携带行数据 */
+  const [dataListDetailContext, setDataListDetailContext] = useState<{
+    name: string;
+    listingStatus: TableRow['listingStatus'];
+    themeNodeId?: string;
+    adminDivision?: string;
+  } | null>(null);
+  const [spatialSearchDetailOpen, setSpatialSearchDetailOpen] = useState(false);
   
-  const [ingestionSubView, setIngestionSubView] = useState<'list' | 'create'>('list');
+  const [ingestionSubView, setIngestionSubView] = useState<'list' | 'create' | 'cloud_disk'>('list');
+  const [ingestionCreateMode, setIngestionCreateMode] = useState<'single' | 'batch'>('single');
+  /** 入库列表：返回时恢复单次/批量、状态筛选与分页 */
+  const [ingestionListScopeTab, setIngestionListScopeTab] = useState<'single' | 'batch'>('single');
+  const [ingestionListStatusTab, setIngestionListStatusTab] = useState<
+    'all' | 'processing' | 'success' | 'failure'
+  >('all');
+  const [ingestionListPage, setIngestionListPage] = useState(1);
+  const [ingestionListPageSize, setIngestionListPageSize] = useState(10);
+  /** 入库列表搜索、批量父行展开：进详情再返回列表时保留 */
+  const [ingestionListSearchQuery, setIngestionListSearchQuery] = useState('');
+  const [ingestionBatchExpandedParentIds, setIngestionBatchExpandedParentIds] = useState<string[]>([
+    'bp-gf1c',
+  ]);
+  const [ingestionSceneDetailId, setIngestionSceneDetailId] = useState<string | null>(null);
+  /** 从云盘选择页返回时，将选中项交给创建任务面板 */
+  const [ingestionCloudPick, setIngestionCloudPick] = useState<{
+    token: number;
+    files: CloudFile[];
+  } | null>(null);
+  /** 从时空数据入库任务名进入的「已入库数据」详情 */
+  const [ingestionDataDetailOpen, setIngestionDataDetailOpen] = useState(false);
+  /** 编辑批量子任务：复用创建页表单 */
+  const [ingestionEditSubTask, setIngestionEditSubTask] =
+    useState<IngestionBatchSubTaskEditContext | null>(null);
   const [services, setServices] = useState<APIRow[]>(MOCK_API_DATA);
   const [directories, setDirectories] = useState<DirectoryNode[]>(INITIAL_DIRECTORIES);
   const [applications, setApplications] = useState<ApplicationRecord[]>(INITIAL_APPLICATIONS);
   const [marketTree, setMarketTree] = useState<MarketNode[]>(INITIAL_MARKET_TREE);
 
+  /** 公共数据集市「收藏」与「我的收藏」列表共用 */
+  const [dataMarketFavoriteIds, setDataMarketFavoriteIds] = useState(readDataMarketFavoriteIds);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        DATA_MARKET_FAVORITES_STORAGE_KEY,
+        JSON.stringify([...dataMarketFavoriteIds]),
+      );
+    } catch {
+      /* ignore quota / private mode */
+    }
+  }, [dataMarketFavoriteIds]);
+
+  useEffect(() => {
+    setIngestionListPage(1);
+  }, [ingestionListScopeTab, ingestionListStatusTab, ingestionListSearchQuery]);
+
+  const toggleIngestionBatchParentExpand = (id: string) => {
+    setIngestionBatchExpandedParentIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  };
+
+  const toggleDataMarketFavorite = (id: string) => {
+    setDataMarketFavoriteIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const mergeBatchDataMarketFavorites = (ids: string[]) => {
+    if (ids.length === 0) return;
+    setDataMarketFavoriteIds((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => next.add(id));
+      return next;
+    });
+  };
+
+  const isSpatialIngestionMenu = (id: string) =>
+    id === 'spatial_ingestion_single' || id === 'spatial_ingestion_batch';
+
   const handleMenuSelect = (id: string) => {
     setActiveMenuId(id);
-    if (id === 'spatial_ingestion') {
-        setIngestionSubView('list');
+    if (id !== 'spatio_temporal_search') {
+      setSpatialSearchDetailOpen(false);
+    }
+    if (!isSpatialIngestionMenu(id)) {
+      setIngestionDataDetailOpen(false);
+      setIngestionSceneDetailId(null);
+    }
+    if (isSpatialIngestionMenu(id)) {
+      setIngestionSubView('list');
+      setIngestionDataDetailOpen(false);
+      setIngestionCloudPick(null);
+      setIngestionEditSubTask(null);
+      setIngestionListScopeTab(id === 'spatial_ingestion_batch' ? 'batch' : 'single');
     }
     if (viewMode === 'detail') {
       setViewMode('list');
@@ -219,8 +330,12 @@ function App() {
   };
 
   const menuLabels: Record<string, string> = {
+      data_list: '数据总库',
+      metadata: '元数据管理',
+      style_mgmt: '样式管理',
       data_theme: '数据主题',
       data_standard: '数据标准',
+      standard_code_table: '标准码表',
       business_management: '业务管理',
       my_applications: '我的申请',
       my_favorites: '我的收藏',
@@ -228,12 +343,18 @@ function App() {
       audit_application: '数据申请审核',
       audit_listing: '数据上架审核',
       datasource_mgmt: '数据源管理',
-      spatio_temporal_search: '数据时空检索',
+      spatial_ingestion_single: '单次入库',
+      spatial_ingestion_batch: '批量入库',
+      spatio_temporal_search: '时空综合检索',
+      knowledge_graph_search: '知识图谱检索',
       smart_map: '地图场景设计',
       smart_map_market: '地图场景集市',
       data_sensitivity: '数据密级',
       sensitive_data_config: '敏感数据配置',
       identification_rules: '识别规则管理',
+      governance_tools: '治理工具',
+      public_data_market: '公共数据集市',
+      service_market: '服务集市',
   };
 
   return (
@@ -248,37 +369,218 @@ function App() {
       
       <div className="relative z-10 flex w-full h-full">
           <Sidebar activeMenuId={activeMenuId} onMenuSelect={handleMenuSelect} />
-          <div className="flex-1 flex flex-col my-3 mr-3 ml-0 bg-white/70 backdrop-blur-xl rounded-2xl shadow-[0_25px_50px_-12px_rgba(0,0,0,0.2)] border border-white/40 p-4 overflow-hidden transition-all duration-500 ease-out">
-            <div className="flex flex-col h-full bg-white rounded-xl overflow-hidden shadow-sm relative ring-1 ring-slate-900/5">
+          <div className="flex-1 flex flex-col my-3 mr-3 ml-3 min-w-0 bg-white/70 backdrop-blur-xl rounded-2xl shadow-[0_25px_50px_-12px_rgba(0,0,0,0.2)] border border-white/40 p-4 overflow-hidden transition-all duration-500 ease-out">
+            <div
+              className={
+                (activeMenuId === 'data_list' ||
+                  activeMenuId === 'public_data_market' ||
+                  activeMenuId === 'my_favorites') &&
+                  viewMode === 'list'
+                  ? 'flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-transparent'
+                  : 'relative flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-900/5'
+              }
+            >
                 {activeMenuId === 'data_theme' ? (
                     <DataThemePanel />
                 ) : activeMenuId === 'data_standard' ? (
                     <DataStandardPanel />
+                ) : activeMenuId === 'standard_code_table' ? (
+                    <StandardCodeTablePanel />
                 ) : activeMenuId === 'business_management' ? (
                     <BusinessManagementPanel />
-                ) : activeMenuId === 'data_list' ? (
+                ) : activeMenuId === 'my_favorites' ? (
                    <>
-                       {viewMode === 'list' ? (
-                         <div className="flex-1 overflow-hidden relative animate-fadeIn flex">
-                             <div className="w-[280px] border-r border-slate-100 h-full overflow-hidden">
-                                <DataThemePanel /> 
-                             </div>
-                             <DataTablePanel onViewDetail={() => setViewMode('detail')} />
+                      {viewMode === 'list' ? (
+                         <div className="animate-fadeIn flex min-h-0 min-w-0 flex-1 overflow-hidden">
+                             <DataTablePanel
+                               dataView="my_favorites"
+                               favoriteIds={dataMarketFavoriteIds}
+                               onToggleFavorite={toggleDataMarketFavorite}
+                               onBatchAddFavorites={mergeBatchDataMarketFavorites}
+                               onViewDetail={(ctx) => {
+                                 setDataListDetailContext(ctx);
+                                 setDetailBackTarget('my_favorites');
+                                 setViewMode('detail');
+                               }}
+                             />
                          </div>
                        ) : (
-                         <DataDetailPanel onBack={() => setViewMode('list')} />
+                         <DataDetailPanel
+                           initialListingStatus={dataListDetailContext?.listingStatus}
+                           initialDataName={dataListDetailContext?.name}
+                           initialThemeNodeId={dataListDetailContext?.themeNodeId}
+                           initialAdminDivision={dataListDetailContext?.adminDivision}
+                           allowDownload={detailBackTarget !== 'data_list'}
+                           allowDetailEdit={
+                             detailBackTarget !== 'public_data_market' &&
+                             detailBackTarget !== 'my_favorites'
+                           }
+                           onBack={() => {
+                             setDataListDetailContext(null);
+                             if (detailBackTarget === 'my_favorites') {
+                               setActiveMenuId('my_favorites');
+                             }
+                             setViewMode('list');
+                           }}
+                         />
+                       )}
+                   </>
+                ) : activeMenuId === 'data_list' || activeMenuId === 'public_data_market' ? (
+                   <>
+                      {viewMode === 'list' ? (
+                         <div className="animate-fadeIn flex min-h-0 min-w-0 flex-1 flex-row gap-4 overflow-hidden">
+                             <DataThemePanel
+                               variant="sidebar"
+                               sidebarTitle={
+                                 activeMenuId === 'public_data_market' ? '公共数据集市' : '数据总库'
+                               }
+                             />
+                             <DataTablePanel
+                               dataView={
+                                 activeMenuId === 'public_data_market'
+                                   ? 'public_data_market'
+                                   : 'data_list'
+                               }
+                               favoriteIds={dataMarketFavoriteIds}
+                               onToggleFavorite={toggleDataMarketFavorite}
+                               onBatchAddFavorites={mergeBatchDataMarketFavorites}
+                               onViewDetail={(ctx) => {
+                                 setDataListDetailContext(ctx);
+                                 setDetailBackTarget(
+                                   activeMenuId === 'public_data_market'
+                                     ? 'public_data_market'
+                                     : 'data_list',
+                                 );
+                                 setViewMode('detail');
+                               }}
+                             />
+                         </div>
+                       ) : (
+                         <DataDetailPanel
+                           initialListingStatus={dataListDetailContext?.listingStatus}
+                           initialDataName={dataListDetailContext?.name}
+                           initialThemeNodeId={dataListDetailContext?.themeNodeId}
+                           initialAdminDivision={dataListDetailContext?.adminDivision}
+                           allowDownload={detailBackTarget !== 'data_list'}
+                           allowDetailEdit={
+                             detailBackTarget !== 'public_data_market' &&
+                             detailBackTarget !== 'my_favorites'
+                           }
+                           onBack={() => {
+                             setDataListDetailContext(null);
+                             if (detailBackTarget === 'spatio_temporal_search') {
+                               setActiveMenuId('spatio_temporal_search');
+                             } else if (detailBackTarget === 'public_data_market') {
+                               setActiveMenuId('public_data_market');
+                             }
+                             setViewMode('list');
+                           }}
+                         />
                        )}
                    </>
                 ) : activeMenuId === 'stats' ? (
                     <DataStatsPanel />
-                ) : activeMenuId === 'spatial_ingestion' ? (
+                ) : isSpatialIngestionMenu(activeMenuId) ? (
                     ingestionSubView === 'list' ? (
-                        <SpatialDataIngestionPanel onCreateTask={() => setIngestionSubView('create')} />
+                        ingestionDataDetailOpen ? (
+                            <DataDetailPanel
+                              onBack={() => {
+                                setIngestionDataDetailOpen(false);
+                                setIngestionSceneDetailId(null);
+                              }}
+                              initialDataName={
+                                ingestionSceneDetailId
+                                  ? getGf1cSceneDetail(ingestionSceneDetailId)?.name
+                                  : undefined
+                              }
+                              satelliteSceneDetail={
+                                ingestionSceneDetailId
+                                  ? getGf1cSceneDetail(ingestionSceneDetailId) ?? undefined
+                                  : undefined
+                              }
+                              hideDataTable
+                              allowDetailEdit={false}
+                              allowDownload={false}
+                            />
+                        ) : (
+                            <SpatialDataIngestionPanel
+                                pageTitle={
+                                  activeMenuId === 'spatial_ingestion_batch' ? '批量入库' : '单次入库'
+                                }
+                                hideScopeTabs
+                                scopeTab={ingestionListScopeTab}
+                                onScopeTabChange={setIngestionListScopeTab}
+                                statusTab={ingestionListStatusTab}
+                                onStatusTabChange={setIngestionListStatusTab}
+                                listPage={ingestionListPage}
+                                listPageSize={ingestionListPageSize}
+                                onListPageChange={setIngestionListPage}
+                                onListPageSizeChange={setIngestionListPageSize}
+                                listSearchQuery={ingestionListSearchQuery}
+                                onListSearchQueryChange={setIngestionListSearchQuery}
+                                batchExpandedParentIds={ingestionBatchExpandedParentIds}
+                                onToggleBatchParentExpand={toggleIngestionBatchParentExpand}
+                                onCreateTask={(mode) => {
+                                    setIngestionEditSubTask(null);
+                                    setIngestionCreateMode(mode);
+                                    setIngestionListScopeTab(mode);
+                                    setIngestionSubView('create');
+                                }}
+                                onEditBatchSubTask={(task, parent) => {
+                                    setIngestionEditSubTask({
+                                        task,
+                                        batchGroupName: parent.directoryName,
+                                        parentId: parent.id,
+                                    });
+                                    setIngestionCreateMode('batch');
+                                    setIngestionListScopeTab('batch');
+                                    setIngestionSubView('create');
+                                }}
+                                onOpenIngestedDataDetail={(task) => {
+                                  setIngestionSceneDetailId(
+                                    isGf1cSceneTaskId(task.id) ? task.id : null,
+                                  );
+                                  setIngestionDataDetailOpen(true);
+                                }}
+                            />
+                        )
                     ) : (
-                        <CreateIngestionTaskPanel 
-                            onBack={() => setIngestionSubView('list')} 
-                            onNavigate={handleMenuSelect}
-                        />
+                        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+                            <div
+                                className={
+                                    ingestionSubView === 'cloud_disk'
+                                        ? 'pointer-events-none invisible absolute inset-0 flex min-h-0 min-w-0 flex-1 flex-col'
+                                        : 'flex min-h-0 min-w-0 flex-1 flex-col'
+                                }
+                                aria-hidden={ingestionSubView === 'cloud_disk'}
+                            >
+                                <CreateIngestionTaskPanel
+                                    createMode={ingestionCreateMode}
+                                    editSubTask={ingestionEditSubTask}
+                                    onBack={() => {
+                                        setIngestionSubView('list');
+                                        setIngestionEditSubTask(null);
+                                    }}
+                                    onResubmitSubTask={() => {
+                                        setIngestionEditSubTask(null);
+                                    }}
+                                    onNavigate={handleMenuSelect}
+                                    onOpenCloudDisk={() => setIngestionSubView('cloud_disk')}
+                                    pendingCloudPick={ingestionCloudPick}
+                                    onPendingCloudPickConsumed={() => setIngestionCloudPick(null)}
+                                />
+                            </div>
+                            {ingestionSubView === 'cloud_disk' && (
+                                <div className="absolute inset-0 z-20 flex min-h-0 min-w-0 flex-col bg-white">
+                                    <CloudDiskSelectionPage
+                                        onBack={() => setIngestionSubView('create')}
+                                        onConfirm={(files) => {
+                                            setIngestionCloudPick({ token: Date.now(), files });
+                                        }}
+                                    />
+                                </div>
+                            )}
+                        </div>
                     )
                 ) : activeMenuId === 'production_line' ? (
                     <ProductionLinePanel />
@@ -287,7 +589,18 @@ function App() {
                 ) : activeMenuId === 'smart_map_market' ? (
                     <DataSmartMapMarketPanel marketTree={marketTree} setMarketTree={setMarketTree} />
                 ) : activeMenuId === 'spatio_temporal_search' ? (
-                    <SpatialSearchPanel />
+                    spatialSearchDetailOpen ? (
+                        <DataDetailPanel onBack={() => setSpatialSearchDetailOpen(false)} />
+                    ) : (
+                        <SpatialSearchPanel
+                            onOpenDataDetail={() => {
+                                setDetailBackTarget('spatio_temporal_search');
+                                setSpatialSearchDetailOpen(true);
+                            }}
+                        />
+                    )
+                ) : activeMenuId === 'knowledge_graph_search' ? (
+                    <KnowledgeGraphSearchPanel />
                 ) : activeMenuId === 'service_dev' ? (
                     <ServiceDevelopmentPanel 
                         apiData={services} 
@@ -319,6 +632,8 @@ function App() {
                     <SensitiveDataConfigPanel onNavigate={handleMenuSelect} />
                 ) : activeMenuId === 'identification_rules' ? (
                     <IdentificationRulesPanel onNavigate={handleMenuSelect} />
+                ) : activeMenuId === 'governance_tools' ? (
+                    <GovernanceToolsPanel />
                 ) : (
                     <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
                         <div className="p-6 bg-slate-50 rounded-3xl mb-4 border border-slate-100 shadow-inner">

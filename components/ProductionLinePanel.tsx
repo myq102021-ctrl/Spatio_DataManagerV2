@@ -6,8 +6,6 @@ import {
     Eye, 
     PlusCircle, 
     ChevronDown, 
-    ChevronLeft, 
-    ChevronRight,
     Play,
     Database,
     Search as SearchIcon,
@@ -19,6 +17,7 @@ import {
     HelpCircle,
     MoreHorizontal
 } from 'lucide-react';
+import { PaginationBar } from './PaginationBar';
 
 interface ProductionData {
     id: string;
@@ -40,6 +39,8 @@ const MOCK_DATA: ProductionData[] = [
 
 export const ProductionLinePanel: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'list' | 'draft'>('list');
+  const [plPage, setPlPage] = useState(1);
+  const [plPageSize, setPlPageSize] = useState(10);
 
   return (
     <div className="flex-1 flex flex-col bg-[#f0f4f8] h-full overflow-y-auto custom-scrollbar p-6 space-y-5 animate-fadeIn font-sans">
@@ -147,21 +148,17 @@ export const ProductionLinePanel: React.FC = () => {
         </div>
 
         {/* Pagination Footer */}
-        <div className="flex items-center justify-between p-4 bg-white border-t border-slate-100">
-            <div className="text-[13px] text-slate-500">共 5 条</div>
-            <div className="flex items-center gap-4">
-                <div className="flex items-center gap-1.5 px-2.5 py-1.5 border border-slate-200 rounded text-[12px] text-slate-600 cursor-pointer hover:bg-slate-50">
-                    10条/页 <ChevronDown size={14} className="text-slate-300" />
-                </div>
-                <div className="flex gap-1 items-center">
-                    <button className="p-1.5 border border-slate-200 text-slate-300 rounded hover:bg-slate-50"><ChevronLeft size={16} /></button>
-                    <button className="w-8 h-8 bg-blue-600 text-white rounded font-bold text-[13px] shadow-sm">1</button>
-                    <button className="p-1.5 border border-slate-200 text-slate-300 rounded hover:bg-slate-50"><ChevronRight size={16} /></button>
-                </div>
-                <div className="flex items-center gap-2 text-[13px] text-slate-500">
-                    前往 <input type="text" className="w-10 h-8 border border-slate-200 rounded text-center outline-none focus:border-blue-400 font-medium" defaultValue="1" /> 页
-                </div>
-            </div>
+        <div className="border-t border-slate-100 bg-white p-4">
+            <PaginationBar
+                total={MOCK_DATA.length}
+                page={plPage}
+                pageSize={plPageSize}
+                onPageChange={setPlPage}
+                onPageSizeChange={(s) => {
+                    setPlPageSize(s);
+                    setPlPage(1);
+                }}
+            />
         </div>
       </div>
 

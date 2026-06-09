@@ -1,8 +1,8 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { 
-    Undo2, 
-    ChevronDown, 
-    CloudUpload, 
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import {
+    Undo2,
+    ChevronDown,
+    CloudUpload,
     X,
     FileCode,
     Loader2,
@@ -10,11 +10,12 @@ import {
     Table as TableIcon,
     Plus,
     CheckCircle2,
-    Search,
     Check,
     Database,
     HelpCircle,
     FileJson,
+    FileArchive,
+    Image as ImageIcon,
     Layers,
     Info,
     Tag as TagIcon,
@@ -22,22 +23,59 @@ import {
     ChevronLeft,
     ChevronRight,
     Trash2,
-    RefreshCw
+    RefreshCw,
+    XCircle,
+    ClipboardCheck,
+    ShieldCheck,
+    ScanSearch,
+    FileCheck2,
+    Ruler,
+    AlertTriangle,
+    BookOpen,
+    FilterX,
 } from 'lucide-react';
-import { CloudDiskSelectionModal } from './CloudDiskSelectionModal';
+import { RequirementsSpecDrawer, type FeaturePoint } from './RequirementsSpecDrawer';
+import type { CloudFile } from './CloudDiskSelectionPage';
+import { PaginationBar } from './PaginationBar';
+import { DATA_THEME_BIND_OPTIONS } from '../constants';
+import type { IngestionBatchSubTaskEditContext } from '../lib/ingestionBatchSubTaskEdit';
+import {
+    defaultMetadataModelForDataType,
+    isIngestionRasterDataType,
+    resolveIngestionTaskDataType,
+} from '../lib/ingestionBatchSubTaskEdit';
 
 interface CreateIngestionTaskPanelProps {
     onBack: () => void;
     onNavigate?: (menuId: string) => void;
+    onOpenCloudDisk?: () => void;
+    pendingCloudPick?: { token: number; files: CloudFile[] } | null;
+    onPendingCloudPickConsumed?: () => void;
+    /** 由列表页「新建单次/批量入库任务」传入，用于标题区分 */
+    createMode?: 'single' | 'batch';
+    /** 编辑批量子任务时传入；表单布局同新建，任务名称为任务组名称（只读） */
+    editSubTask?: IngestionBatchSubTaskEditContext | null;
+    /** 编辑完成后重新提交子任务 */
+    onResubmitSubTask?: (payload: { subTaskName: string; taskId: string }) => void;
 }
 
+/** 云盘同步后的批量映射行；integrityStatus 为入库前数据完整性校验结果 */
 interface ParsedFile {
     id: string;
     name: string;
     extension: string;
     format: string;
+    /** 与「数据类型」下拉：矢量 / 影像 / 三维模型 对应 */
+    dataCategory: 'vector' | 'raster' | 'model3d' | 'unknown';
     size: string;
-    status: 'success' | 'parsing' | 'error';
+    integrityStatus: 'ready' | 'fail';
+    integrityReason?: string;
+    /**
+     * 压缩包内可识别的数据层名称列表。
+     * 长度为 1 时表示与源文件一一对应（名称 = 去扩展名的文件名）；
+     * 长度 > 1 时表示该包内包含多个数据集。
+     */
+    recognizedDataNames: string[];
     targetDb: string;
     targetTable: string;
     targetTableError?: string;
@@ -50,10 +88,378 @@ const MOCK_DATABASES = ['postgis_spatial_db', 'oracle_sde_production', 'mysql_ge
 const MOCK_EXISTING_TABLES = ['t_hubei_points', 'res_water_line', 'admin_boundary_poly', 'osm_roads_main', 'henan_boundary_2024', 'zz_water_poly'];
 const PRESET_TAGS = ['政务数据', '基础地理', '遥感影像', '实时监控', '社会经济', '生态环境'];
 
-export const CreateIngestionTaskPanel: React.FC<CreateIngestionTaskPanelProps> = ({ onBack, onNavigate }) => {
+const SINGLE_DATA_TYPE_OPTIONS = [
+    { label: '矢量', sub: '支持 shp、zip(shp)、gpkg、geojson' },
+    { label: '影像', sub: '支持 tiff、tif、zip(tif、tiff)' },
+    { label: '三维模型', sub: '支持 3DTiles' },
+] as const;
+
+/** 批量入库专用：标准卫星景产品包 */
+const BATCH_SATELLITE_DATA_TYPE_OPTIONS = [
+    { label: 'GF1标准卫星包', sub: '高分一号系列 L1A/L1B 标准景，支持 .tar.gz' },
+    { label: 'GF2标准卫星包', sub: '高分二号系列标准景压缩包，支持 .tar.gz' },
+    { label: 'ZY标准卫星包', sub: '资源卫星系列标准产品包，支持 .tar.gz' },
+    { label: 'Sentinel标准卫星包', sub: 'Sentinel-1/2 标准产品包' },
+    { label: 'Landsat标准卫星包', sub: 'Landsat 8/9 标准景产品包' },
+] as const;
+
+const SATELLITE_PACKAGE_DATA_TYPES: string[] = BATCH_SATELLITE_DATA_TYPE_OPTIONS.map((o) => o.label);
+
+function isSatellitePackageDataType(dt: string): boolean {
+    return SATELLITE_PACKAGE_DATA_TYPES.includes(dt);
+}
+
+function isRasterIngestionDataType(dt: string): boolean {
+    return dt.includes('影像') || isSatellitePackageDataType(dt);
+}
+
+/** 由文件名 / 云盘类型推断所属标准卫星包（批量入库类型校验） */
+function inferSatellitePackageKindFromName(name: string, typeHint = ''): string | null {
+    const n = name.toLowerCase();
+    const t = typeHint.toLowerCase();
+    if (/gf1[a-z]?[_-]|^gf1[_\d]|高分一号|\bgf1\b/.test(n) || /\bgf1\b|高分一号/.test(t)) {
+        return 'GF1标准卫星包';
+    }
+    if (/gf2[a-z]?[_-]|^gf2[_\d]|高分二号|\bgf2\b/.test(n) || /\bgf2\b|高分二号/.test(t)) {
+        return 'GF2标准卫星包';
+    }
+    if (/zy\d|zy0|zy3|hj-1|hj1|资源卫星|资源三号/.test(n) || /zy\d|资源卫星/.test(t)) {
+        return 'ZY标准卫星包';
+    }
+    if (/sentinel|s2[ab]_|s1[ab]_|哨兵/.test(n) || /sentinel|哨兵/.test(t)) {
+        return 'Sentinel标准卫星包';
+    }
+    if (/landsat|lc0[89]|lc1[0-9]/.test(n) || /landsat/.test(t)) {
+        return 'Landsat标准卫星包';
+    }
+    return null;
+}
+
+function fileMatchesSelectedDataType(
+    file: ParsedFile,
+    dataType: string,
+    expectedKind: ParsedFile['dataCategory'] | null,
+    cloudTypeHint?: string,
+): boolean {
+    if (!expectedKind) return true;
+    if (file.dataCategory !== expectedKind) return false;
+    if (!isSatellitePackageDataType(dataType)) return true;
+    return inferSatellitePackageKindFromName(file.name, cloudTypeHint) === dataType;
+}
+
+/** 数据质检步骤：可选工具（示意） */
+const QUALITY_INSPECTION_TOOLS: {
+    id: string;
+    name: string;
+    description: string;
+    corner: 'clipboard' | 'shield' | 'scan' | 'file' | 'ruler';
+}[] = [
+    {
+        id: 'topo',
+        name: '几何拓扑检查',
+        description: '检测自相交、悬挂线、碎面与多边形闭合性等拓扑问题。',
+        corner: 'ruler',
+    },
+    {
+        id: 'schema',
+        name: '属性规范校验',
+        description: '对照数据标准校验字段类型、非空约束、值域与码表一致性。',
+        corner: 'clipboard',
+    },
+    {
+        id: 'crs',
+        name: '坐标系与范围',
+        description: '核对空间参考、投影参数及图幅范围是否与登记信息一致。',
+        corner: 'shield',
+    },
+    {
+        id: 'sensitive',
+        name: '敏感信息扫描',
+        description: '识别身份证号、手机号、坐标精度等敏感字段并提示脱敏策略。',
+        corner: 'scan',
+    },
+    {
+        id: 'raster',
+        name: '影像波段与金字塔',
+        description: '检查影像波段完整性、无效值域及切片金字塔是否可发布。',
+        corner: 'file',
+    },
+    {
+        id: 'naming',
+        name: '命名与元数据',
+        description: '校验图层命名、摘要与关键词是否符合组织内命名规范。',
+        corner: 'clipboard',
+    },
+];
+
+function inferDataFormat(cf: CloudFile): string {
+    const n = cf.name.toLowerCase();
+    const t = (cf.type || '').toLowerCase();
+    if (n.endsWith('.gpkg')) return 'GPKG';
+    if (n.endsWith('.geojson')) return 'JSON';
+    if (n.endsWith('.csv')) return 'CSV';
+    if (n.endsWith('.kml')) return 'KML';
+    if (n.endsWith('.kmz')) return 'KMZ';
+    if (n.endsWith('.dxf')) return 'DXF';
+    if (/\.(tar\.gz|tgz)$/.test(n)) return 'ARCHIVE';
+    if (/\.(tif|tiff|jp2|j2k|img)$/.test(n)) return 'TIFF';
+    if (n.endsWith('.zip')) {
+        if (n.includes('shp') || /shapefile/.test(t)) return 'SHP';
+        if (/mapinfo|\.tab/.test(t)) return 'TAB';
+        return 'ZIP';
+    }
+    if (n.endsWith('.shp')) return 'SHP';
+    return 'FILE';
+}
+
+/** 与「数据类型」矢量 / 影像 / 三维模型 对齐的粗分类（扩展名 + 云盘 iconType + 文件名启发式） */
+function inferDataCategory(cf: CloudFile): ParsedFile['dataCategory'] {
+    const n = cf.name.toLowerCase();
+    const t = (cf.type || '').toLowerCase();
+
+    if (cf.iconType === 'model3d') return 'model3d';
+    if (/\.(glb|gltf|b3dm|pnts|i3dm)$/.test(n)) return 'model3d';
+    if (/3dtiles|三维模型|城市白膜|倾斜摄影/.test(t)) return 'model3d';
+
+    if (cf.iconType === 'raster' || cf.iconType === 'tile_raster' || cf.iconType === 'terrain') return 'raster';
+    if (/\.(tif|tiff|jp2|j2k|img|bmp|png|nc|cog)$/.test(n)) return 'raster';
+    if (/\.(tar\.gz|tgz)$/.test(n)) {
+        if (
+            /gf\d|zy\d|zy0|hj-1|pms|landsat|sentinel|l1a|l1b|l2a|卫星影像|栅格|ortho|dom|dsm|dtm/.test(n) ||
+            /卫星|影像|栅格|raw|瓦片|标准景/.test(t)
+        ) {
+            return 'raster';
+        }
+        return 'unknown';
+    }
+    if (n.endsWith('.zip')) {
+        if (/gf|pms|landsat|sentinel|l1a|l1b|卫星|影像|raster|tif|ortho|dom/.test(n) || /卫星|影像|栅格|raw|瓦片/.test(t)) return 'raster';
+        if (/shp|shapefile|矢量|vector|geojson|gpkg|kml|tab/.test(n) || /矢量|shapefile|vector/.test(t)) return 'vector';
+    }
+
+    if (cf.iconType === 'vector' || cf.iconType === 'tile_vector') return 'vector';
+    if (n.endsWith('.shp') || n.endsWith('.gpkg') || n.endsWith('.geojson') || n.endsWith('.csv') || n.endsWith('.kml') || n.endsWith('.kmz') || n.endsWith('.dxf')) return 'vector';
+
+    return 'unknown';
+}
+
+function extFromName(name: string): string {
+    const lower = name.toLowerCase();
+    if (lower.endsWith('.tar.gz')) return '.tar.gz';
+    if (lower.endsWith('.tgz')) return '.tgz';
+    const i = name.lastIndexOf('.');
+    return i >= 0 ? name.slice(i) : '';
+}
+
+/** 生成「数据名称」：去掉 .tar.gz / .tgz / .zip 等压缩包后缀，保留卫星产品原名 */
+function stripDataNameExtension(filename: string): string {
+    let stem = filename.trim();
+    if (/\.tar\.gz$/i.test(stem)) return stem.slice(0, -7);
+    if (/\.tgz$/i.test(stem)) return stem.slice(0, -4);
+    if (/\.tar$/i.test(stem)) return stem.slice(0, -4);
+    if (/\.zip$/i.test(stem)) return stem.slice(0, -4);
+    const dot = stem.lastIndexOf('.');
+    if (dot > 0) return stem.slice(0, dot);
+    return stem;
+}
+
+/** 数据名称校验：允许卫星元数据包常见字符（含小数点、连字符） */
+function validateDataAliasName(name: string): string | undefined {
+    const trimmed = name.trim();
+    if (!trimmed) return '数据名称不能为空';
+    if (!/^[\u4e00-\u9fa5a-zA-Z0-9_.-]+$/.test(trimmed)) {
+        return '禁止特殊字符';
+    }
+    return undefined;
+}
+
+function defaultTableSlug(name: string, fallbackId: string): string {
+    const stem = name.replace(/\.[^.]+$/, '');
+    let slug = stem
+        .replace(/[\s\u3000]+/g, '_')
+        .replace(/[^a-zA-Z0-9_]/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^_|_$/g, '')
+        .toLowerCase()
+        .slice(0, 56);
+    if (!slug || /^_+$/.test(slug)) {
+        slug = `src_${fallbackId.replace(/-/g, '_')}`;
+    }
+    return slug;
+}
+
+/**
+ * 从文件推断压缩包内的可识别数据层名列表。
+ * - bundle zip（含多个 shp）→ 返回多个层名
+ * - 其他文件 → 单项，值等于去扩展名的文件名
+ */
+function inferRecognizedDataNames(cf: CloudFile): string[] {
+    const stem = stripDataNameExtension(cf.name);
+    const n = cf.name.toLowerCase();
+
+    // 明确是多图层 bundle zip
+    if (n.endsWith('.zip') && n.includes('bundle')) {
+        // 去掉 bundle / shp 后缀得到数据集前缀
+        const base = stem
+            .replace(/_?bundle$/i, '')
+            .replace(/_?shp$/i, '')
+            .replace(/_+$/, '');
+
+        // 按常见命名拆分中文前缀
+        const provinceMatch = /省界|province/i.test(stem);
+        const countyMatch = /县级|county/i.test(stem);
+        const cityMatch = /市界|市级|city/i.test(stem);
+        const districtMatch = /区级|district/i.test(stem);
+
+        if (provinceMatch || countyMatch) {
+            const year = stem.match(/\d{4}/)?.[0] ?? '';
+            return [
+                `省界_Province${year ? '_' + year : ''}`,
+                `县级_County${year ? '_' + year : ''}`,
+            ];
+        }
+        if (cityMatch || districtMatch) {
+            const year = stem.match(/\d{4}/)?.[0] ?? '';
+            return [
+                `市级_City${year ? '_' + year : ''}`,
+                `区级_District${year ? '_' + year : ''}`,
+            ];
+        }
+        // 通用 bundle：用文件名前缀 + layer1/layer2 占位
+        return [`${base}_layer1`, `${base}_layer2`];
+    }
+
+    // 单数据文件：可识别名 = 文件名（去扩展名）
+    return [stem];
+}
+
+/** 入库前数据完整性（mock：按云盘文件名 / 类型 / 约定 id 判定） */
+function validateCloudIntegrity(cf: CloudFile): { ok: boolean; reason?: string } {
+    const n = cf.name.toLowerCase();
+    const t = (cf.type || '').toLowerCase();
+
+    if (cf.id === 'v-shp-zip-bad' || n.includes('缺dbf') || n.includes('缺件') || n.includes('完整性失败')) {
+        return {
+            ok: false,
+            reason: 'Shapefile 套装不完整：缺少 .dbf 属性表或 .shx 几何索引，无法入库',
+        };
+    }
+    if (n.includes('_损坏') || n.includes('_corrupt') || n.includes('校验失败') || t.includes('数据损坏')) {
+        return { ok: false, reason: '压缩包或矢量文件头校验失败，疑似结构损坏' };
+    }
+
+    const isShpBundleZip =
+        cf.iconType === 'zip' && n.endsWith('.zip') && (n.includes('shp') || /shapefile/.test(t));
+    if (isShpBundleZip) {
+        return { ok: true };
+    }
+    if (n.endsWith('.shp')) {
+        return { ok: true };
+    }
+    if (
+        cf.iconType === 'vector' &&
+        (n.endsWith('.gpkg') || n.endsWith('.geojson') || n.endsWith('.csv') || n.endsWith('.kml'))
+    ) {
+        return { ok: true };
+    }
+    if (n.endsWith('.kmz') || (cf.iconType === 'zip' && /kml/.test(t))) {
+        return { ok: true };
+    }
+    if (cf.iconType === 'zip' && /mapinfo|tab/.test(t)) {
+        return { ok: true };
+    }
+    if (n.endsWith('.dxf')) {
+        return { ok: true };
+    }
+    return { ok: true };
+}
+
+function cloudFilesToParsedRows(files: CloudFile[], defaultDb: string): ParsedFile[] {
+    const nameRegex = /^[a-zA-Z0-9_]+$/;
+    const usedSlugs = new Set<string>();
+    // 每个 recognizedDataName 展开为独立行
+    return files.flatMap((cf) => {
+        const fmt = inferDataFormat(cf);
+        const integrity = validateCloudIntegrity(cf);
+        const extension = extFromName(cf.name);
+        const allNames = inferRecognizedDataNames(cf);
+
+        return allNames.map((recognizedName, idx) => {
+            let baseSlug = defaultTableSlug(recognizedName, `${cf.id}_${idx}`);
+            let candidate = baseSlug;
+            let bump = 0;
+            while (usedSlugs.has(candidate)) {
+                bump += 1;
+                candidate = `${baseSlug}_${bump}`;
+            }
+            usedSlugs.add(candidate);
+            const slug = candidate;
+            const targetTableError = nameRegex.test(slug) ? undefined : '仅限英文、数字和下划线';
+            const aliasStem = recognizedName || stripDataNameExtension(cf.name) || cf.name;
+            const targetAliasError = validateDataAliasName(aliasStem);
+
+            return {
+                id: allNames.length > 1 ? `${cf.id}-layer${idx}` : cf.id,
+                name: cf.name,
+                extension,
+                format: fmt,
+                dataCategory: inferDataCategory(cf),
+                size: cf.size === '-' ? '—' : cf.size,
+                integrityStatus: integrity.ok ? 'ready' : 'fail',
+                integrityReason: integrity.reason,
+                recognizedDataNames: [recognizedName],
+                targetDb: defaultDb,
+                targetTable: slug,
+                targetTableError,
+                targetAlias: aliasStem,
+                targetAliasError,
+                isAutoCreate: !MOCK_EXISTING_TABLES.includes(slug),
+            };
+        });
+    });
+}
+
+function subTaskToPrefillCloudFile(task: IngestionBatchSubTaskEditContext['task']): CloudFile {
+    const isRaster = isIngestionRasterDataType(task.dataType);
+    return {
+        id: `edit-cloud-${task.id}`,
+        name: isRaster ? `${task.name}.tar.gz` : `${task.name}.zip`,
+        size: '—',
+        type: isRaster ? '卫星影像 / tar.gz' : 'Shapefile / zip',
+        date: task.createTime,
+        iconType: 'zip',
+    };
+}
+
+const CREATE_INGESTION_FEATURE_POINTS: FeaturePoint[] = [
+    { key: 'page-header', label: '页面头部', description: '标题与返回按钮' },
+    { key: 'step-nav', label: '左侧步骤导航', description: '步骤 1-4 进度指示器' },
+    { key: 'step1-data-type', label: '步骤1：数据类型选择', description: '矢量 / 影像 / GF1标准卫星包 等下拉' },
+    { key: 'step1-execution', label: '步骤1：执行方式', description: '离线任务 / 实时任务 单选' },
+    { key: 'step1-theme', label: '步骤1：数据主题绑定', description: '绑定到已有数据主题节点' },
+    { key: 'step1-task-name', label: '步骤1：任务名称', description: '自动生成或手动填写入库任务名' },
+    { key: 'step2-upload', label: '步骤2：本地文件上传', description: '拖拽 / 点击上传区域' },
+    { key: 'step2-cloud-disk', label: '步骤2：从云盘选择', description: '跳转至云盘文件选择页' },
+    { key: 'step2-file-list', label: '步骤2：已选文件列表', description: '解析后的批量文件行，含完整性校验状态' },
+    { key: 'step3-validation', label: '步骤3：数据校验', description: '格式校验、坐标系检查、完整性检查' },
+    { key: 'step4-metadata', label: '步骤4：元数据填写', description: '数据集名称、标签、描述等元数据字段' },
+    { key: 'step4-finish', label: '步骤4：完成并提交', description: '"完成并返回" / "重新提交子任务" 按钮' },
+    { key: 'edit-subtask', label: '编辑子任务模式', description: '从列表页编辑已有批量子任务时的表单' },
+];
+
+export const CreateIngestionTaskPanel: React.FC<CreateIngestionTaskPanelProps> = ({
+    onBack,
+    onNavigate,
+    onOpenCloudDisk,
+    pendingCloudPick,
+    onPendingCloudPickConsumed,
+    createMode = 'single',
+    editSubTask = null,
+    onResubmitSubTask,
+}) => {
+    const isEditSubTaskMode = !!editSubTask;
     const [sourceType, setSourceType] = useState<'cloud' | 'datasource'>('cloud');
-    const [isCloudModalOpen, setIsCloudModalOpen] = useState(false);
-    const [selectedCloudFiles, setSelectedCloudFiles] = useState<any[]>([]);
+    const [selectedCloudFiles, setSelectedCloudFiles] = useState<CloudFile[]>([]);
     const [parsedFiles, setParsedFiles] = useState<ParsedFile[]>([]);
     const [isParsing, setIsParsing] = useState(false);
     
@@ -63,16 +469,15 @@ export const CreateIngestionTaskPanel: React.FC<CreateIngestionTaskPanelProps> =
     // 表单状态
     const [taskName, setTaskName] = useState('上传离线任务-20251229152602');
     const [taskNameError, setTaskNameError] = useState('');
+    const [subTaskName, setSubTaskName] = useState('');
+    const [subTaskNameError, setSubTaskNameError] = useState('');
     const [dataType, setDataType] = useState<string>('');
     const [metadataModel, setMetadataModel] = useState<string>('');
     const [dataTheme, setDataTheme] = useState<string>('');
     const [dataLabels, setDataLabels] = useState<string[]>([]);
-    
-    // 目标数据选择状态
-    const [targetDb, setTargetDb] = useState<string>('');
-    const [targetTable, setTargetTable] = useState<string>('');
-    const [tableAlias, setTableAlias] = useState<string>('');
-    const [aliasError, setAliasError] = useState<string>('');
+    /** 勾选后允许在存在类型不符文件时继续，但仅处理与「数据类型」一致的条目 */
+    const [ignoreDataTypeMismatch, setIgnoreDataTypeMismatch] = useState(false);
+    const [cloudOpenHint, setCloudOpenHint] = useState('');
 
     // 映射表格分页状态
     const [mappingPage, setMappingPage] = useState(1);
@@ -80,65 +485,99 @@ export const CreateIngestionTaskPanel: React.FC<CreateIngestionTaskPanelProps> =
 
     const steps = [
         { id: 1, label: '数据注册与上传' },
-        { id: 2, label: '数据质检规则与模板' },
+        { id: 2, label: '数据质检' },
         { id: 3, label: '服务注册与发布' },
     ];
 
-    const activeStep = 1;
+    const [activeStep, setActiveStep] = useState(1);
+    const [specDrawerOpen, setSpecDrawerOpen] = useState(false);
+    const [selectedQualityToolIds, setSelectedQualityToolIds] = useState<string[]>([]);
 
-    const handleCloudConfirm = (files: any[]) => {
-        setSelectedCloudFiles(files);
-        setIsCloudModalOpen(false);
-        
-        if (files.length > 0) {
-            setIsParsing(true);
-            setParsedFiles([]); 
-            setMappingPage(1);
-            
-            setTimeout(() => {
-                const mockParsed: ParsedFile[] = [
-                    { 
-                        id: 'f-1', name: '河南省主要河流水系', extension: '.shp', format: 'SHP', size: '4.2MB', 
-                        status: 'success', targetDb: MOCK_DATABASES[0], targetTable: 'henan_river_main', targetAlias: '河南省主要河流水系', isAutoCreate: true 
-                    },
-                    { 
-                        id: 'f-2', name: '2024年武汉市建筑物轮廓', extension: '.geojson', format: 'JSON', size: '12.8MB', 
-                        status: 'success', targetDb: MOCK_DATABASES[0], targetTable: 'wh_building_poly', targetAlias: '2024年武汉市建筑物轮廓', isAutoCreate: true 
-                    },
-                    { 
-                        id: 'f-3', name: '全省县级行政界线', extension: '.shp', size: '2.1MB', format: 'SHP', 
-                        status: 'success', targetDb: MOCK_DATABASES[1], targetTable: 'admin_boundary_poly', targetAlias: '全省县级行政界线', isAutoCreate: false 
-                    },
-                    { 
-                        id: 'f-4', name: '重点工程监测点位', extension: '.csv', size: '56KB', format: 'CSV', 
-                        status: 'success', targetDb: MOCK_DATABASES[0], targetTable: 'project_monitor_pts', targetAlias: '重点工程监测点位', isAutoCreate: true 
-                    },
-                    { 
-                        id: 'f-5', name: '长江大堤中线要素', extension: '.gpkg', size: '8.5MB', format: 'GPKG', 
-                        status: 'success', targetDb: MOCK_DATABASES[2], targetTable: 'cj_dy_line', targetAlias: '长江大堤中线要素', isAutoCreate: true 
-                    }
-                ];
-                setParsedFiles(mockParsed);
-                setIsParsing(false);
-            }, 1500);
-        }
+    const toggleQualityTool = (id: string) => {
+        setSelectedQualityToolIds((prev) =>
+            prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+        );
     };
+
+    const handleCloudConfirm = (files: CloudFile[]) => {
+        setIgnoreDataTypeMismatch(false);
+        setCloudOpenHint('');
+        setSelectedCloudFiles(files);
+        if (files.length === 0) {
+            setParsedFiles([]);
+            setIsParsing(false);
+            return;
+        }
+        setIsParsing(true);
+        setParsedFiles([]);
+        setMappingPage(1);
+        window.setTimeout(() => {
+            setParsedFiles(cloudFilesToParsedRows(files, batchDb));
+            setIsParsing(false);
+        }, 400);
+    };
+
+    useEffect(() => {
+        if (!pendingCloudPick) return;
+        handleCloudConfirm(pendingCloudPick.files);
+        onPendingCloudPickConsumed?.();
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 按 token 应用一次父级传入的云盘选择
+    }, [pendingCloudPick?.token]);
+
+    useEffect(() => {
+        if (!editSubTask) return;
+        const { task, batchGroupName } = editSubTask;
+        const dt = resolveIngestionTaskDataType(task, batchGroupName);
+        setTaskName(batchGroupName);
+        setTaskNameError('');
+        setSubTaskName(task.name);
+        setSubTaskNameError('');
+        setDataType(dt);
+        setMetadataModel(defaultMetadataModelForDataType(dt));
+        setDataTheme(task.themeNodeId ?? 'rs-sat-s2');
+        setDataLabels(
+            isIngestionRasterDataType(dt)
+                ? ['遥感影像', '高分系列']
+                : ['政务数据', '基础地理'],
+        );
+        setActiveStep(1);
+        setIgnoreDataTypeMismatch(false);
+        const cf = subTaskToPrefillCloudFile(task);
+        setSelectedCloudFiles([cf]);
+        setParsedFiles(cloudFilesToParsedRows([cf], batchDb));
+        setMappingPage(1);
+        setIsParsing(false);
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 切换编辑子任务时整表重置一次
+    }, [editSubTask?.task.id]);
 
     const removeFile = (e: React.MouseEvent) => {
         e.stopPropagation();
+        setIgnoreDataTypeMismatch(false);
         setSelectedCloudFiles([]);
         setParsedFiles([]);
     };
 
     const handleDeleteParsedFile = (id: string) => {
-        setParsedFiles(prev => {
-            const next = prev.filter(f => f.id !== id);
+        setParsedFiles((prev) => {
+            const next = prev.filter((f) => f.id !== id);
             const maxPage = Math.ceil(next.length / MAPPING_PAGE_SIZE);
             if (mappingPage > maxPage && maxPage > 0) {
                 setMappingPage(maxPage);
             }
             return next;
         });
+        setSelectedCloudFiles((prev) => prev.filter((f) => f.id !== id));
+    };
+
+    const handleRemoveFailedFiles = () => {
+        const failedIds = new Set(parsedFiles.filter((f) => f.integrityStatus === 'fail').map((f) => f.id));
+        setParsedFiles((prev) => {
+            const next = prev.filter((f) => !failedIds.has(f.id));
+            const maxPage = Math.ceil(next.length / MAPPING_PAGE_SIZE);
+            if (mappingPage > maxPage && maxPage > 0) setMappingPage(maxPage);
+            return next;
+        });
+        setSelectedCloudFiles((prev) => prev.filter((f) => !failedIds.has(f.id)));
     };
 
     const updateFileInfo = (id: string, key: keyof ParsedFile, value: any) => {
@@ -157,12 +596,7 @@ export const CreateIngestionTaskPanel: React.FC<CreateIngestionTaskPanelProps> =
                 }
                 // 目标表别名校验：中文、英文、数字、下划线
                 if (key === 'targetAlias') {
-                    const aliasRegex = /^[\u4e00-\u9fa5a-zA-Z0-9_]*$/;
-                    if (!aliasRegex.test(value)) {
-                        updated.targetAliasError = '禁止特殊字符';
-                    } else {
-                        updated.targetAliasError = undefined;
-                    }
+                    updated.targetAliasError = validateDataAliasName(value);
                 }
                 return updated;
             }
@@ -177,33 +611,29 @@ export const CreateIngestionTaskPanel: React.FC<CreateIngestionTaskPanelProps> =
     };
 
     // 任务名称校验 - 严格不支持特殊字符
+    const nameFieldRegex = /^[\u4e00-\u9fa5a-zA-Z0-9_]+$/;
+
     const handleTaskNameChange = (val: string) => {
+        if (isEditSubTaskMode) return;
         setTaskName(val);
         if (!val) {
             setTaskNameError('任务名称不能为空');
             return;
         }
-        // 允许中文、英文、数字、下划线，显式排除其他特殊字符（如中划线、空格、标点等）
-        const regex = /^[\u4e00-\u9fa5a-zA-Z0-9_]+$/;
-        if (!regex.test(val)) {
+        if (!nameFieldRegex.test(val)) {
             setTaskNameError('任务名称不支持特殊字符，仅限中文、字母、数字和下划线');
         } else {
             setTaskNameError('');
         }
     };
 
-    // 表别名校验：中文、英文、数字，不允许特殊字符
-    const validateAlias = (val: string) => {
-        if (!val) {
-            setAliasError('');
+    const handleSubTaskNameChange = (val: string) => {
+        setSubTaskName(val);
+        if (!val.trim()) {
+            setSubTaskNameError('子任务名称不能为空');
             return;
         }
-        const regex = /^[\u4e00-\u9fa5a-zA-Z0-9_]+$/;
-        if (!regex.test(val)) {
-            setAliasError('别名仅支持中文、英文、数字及下划线');
-        } else {
-            setAliasError('');
-        }
+        setSubTaskNameError('');
     };
 
     // 计算分页
@@ -214,7 +644,142 @@ export const CreateIngestionTaskPanel: React.FC<CreateIngestionTaskPanelProps> =
     );
 
     // 计算匹配到的 shp 文件数量
-    const matchedShpCount = parsedFiles.filter(f => f.format === 'SHP').length;
+    const matchedShpCount = parsedFiles.filter((f) => f.format === 'SHP').length;
+    const integrityReadyCount = parsedFiles.filter((f) => f.integrityStatus === 'ready').length;
+    const integrityFailCount = parsedFiles.filter((f) => f.integrityStatus === 'fail').length;
+
+    const effectiveCreateMode = isEditSubTaskMode ? 'batch' : createMode;
+
+    const dataTypeOptions = useMemo(
+        () =>
+            effectiveCreateMode === 'batch'
+                ? [...SINGLE_DATA_TYPE_OPTIONS, ...BATCH_SATELLITE_DATA_TYPE_OPTIONS]
+                : [...SINGLE_DATA_TYPE_OPTIONS],
+        [effectiveCreateMode],
+    );
+
+    const cloudTypeByFileId = useMemo(() => {
+        const m = new Map<string, string>();
+        selectedCloudFiles.forEach((cf) => m.set(cf.id, cf.type || ''));
+        return m;
+    }, [selectedCloudFiles]);
+
+    const expectedKind = useMemo((): ParsedFile['dataCategory'] | null => {
+        const dt = dataType || '';
+        if (dt.includes('矢量')) return 'vector';
+        if (isRasterIngestionDataType(dt)) return 'raster';
+        if (dt.includes('三维')) return 'model3d';
+        return null;
+    }, [dataType]);
+
+    const filesTypeEligible = useMemo(
+        () =>
+            parsedFiles.filter((f) =>
+                fileMatchesSelectedDataType(
+                    f,
+                    dataType,
+                    expectedKind,
+                    cloudTypeByFileId.get(f.id),
+                ),
+            ),
+        [parsedFiles, expectedKind, dataType, cloudTypeByFileId],
+    );
+
+    const typeMismatchCount = useMemo(() => {
+        if (!expectedKind) return 0;
+        return parsedFiles.filter(
+            (f) =>
+                !fileMatchesSelectedDataType(
+                    f,
+                    dataType,
+                    expectedKind,
+                    cloudTypeByFileId.get(f.id),
+                ),
+        ).length;
+    }, [parsedFiles, expectedKind, dataType, cloudTypeByFileId]);
+
+    /** 数据类型为「影像」：不入物理库表映射，仅维护数据名称（原目标表别名） */
+    const isRasterImageryType = expectedKind === 'raster';
+    const mappingTableColCount = isRasterImageryType ? 5 : 7;
+
+    const dataTypeBlocksNext =
+        !!expectedKind &&
+        parsedFiles.length > 0 &&
+        ((!ignoreDataTypeMismatch && typeMismatchCount > 0) ||
+            (ignoreDataTypeMismatch && filesTypeEligible.length === 0));
+
+    const rowsForStepValidation = useMemo(() => {
+        if (expectedKind && ignoreDataTypeMismatch && filesTypeEligible.length > 0) return filesTypeEligible;
+        return parsedFiles;
+    }, [expectedKind, ignoreDataTypeMismatch, filesTypeEligible, parsedFiles]);
+
+    const step1FieldErrors = useMemo(
+        () =>
+            rowsForStepValidation.some((f) => {
+                if (f.integrityStatus === 'fail' || !!f.targetAliasError) return true;
+                if (isRasterImageryType) return false;
+                return !!f.targetTableError;
+            }),
+        [rowsForStepValidation, isRasterImageryType],
+    );
+
+    const subTaskNameOk =
+        !isEditSubTaskMode || (!subTaskNameError && subTaskName.trim().length > 0);
+
+    const step1NextEnabled =
+        parsedFiles.length > 0 &&
+        !!dataType.trim() &&
+        !taskNameError &&
+        subTaskNameOk &&
+        !dataTypeBlocksNext &&
+        !step1FieldErrors;
+
+    const handleRemoveTypeMismatched = () => {
+        if (!expectedKind) return;
+        const keepIds = new Set(filesTypeEligible.map((f) => f.id));
+        setSelectedCloudFiles((prev) => prev.filter((f) => keepIds.has(f.id)));
+        setParsedFiles((prev) => {
+            const next = prev.filter((f) => keepIds.has(f.id));
+            const maxPage = Math.ceil(next.length / MAPPING_PAGE_SIZE);
+            if (mappingPage > maxPage && maxPage > 0) setMappingPage(maxPage);
+            return next;
+        });
+        setIgnoreDataTypeMismatch(false);
+    };
+
+    useEffect(() => {
+        setIgnoreDataTypeMismatch(false);
+        setCloudOpenHint('');
+    }, [dataType]);
+
+    useEffect(() => {
+        if (!isSatellitePackageDataType(dataType)) return;
+        const modelByType: Record<string, string> = {
+            'GF1标准卫星包': 'GF卫星元数据标准',
+            'GF2标准卫星包': 'GF卫星元数据标准',
+            'ZY标准卫星包': 'ZY卫星元数据标准',
+            'Sentinel标准卫星包': 'Sentinel卫星元数据标准',
+            'Landsat标准卫星包': 'Landsat卫星元 metadata标准',
+        };
+        const next = modelByType[dataType];
+        if (next) setMetadataModel(next);
+    }, [dataType]);
+
+    const pageTitle = isEditSubTaskMode
+        ? '编辑子任务'
+        : createMode === 'batch'
+          ? '创建批量时空数据入库任务'
+          : '创建单次时空数据入库任务';
+
+    const handleFinish = () => {
+        if (isEditSubTaskMode && editSubTask) {
+            onResubmitSubTask?.({
+                subTaskName: subTaskName.trim(),
+                taskId: editSubTask.task.id,
+            });
+        }
+        onBack();
+    };
 
     return (
         <div className="flex-1 flex flex-col bg-[#f0f4f8] h-full overflow-hidden animate-fadeIn font-sans">
@@ -222,15 +787,26 @@ export const CreateIngestionTaskPanel: React.FC<CreateIngestionTaskPanelProps> =
             <div className="flex items-center justify-between px-8 py-5">
                 <div className="flex items-center gap-2">
                     <div className="w-1.5 h-5 bg-slate-800 rounded-full"></div>
-                    <h2 className="text-[17px] font-bold text-slate-800">创建时空数据入库任务</h2>
+                    <h2 className="text-[17px] font-bold text-slate-800">{pageTitle}</h2>
                 </div>
-                <button 
-                    onClick={onBack}
-                    className="flex items-center gap-1.5 px-5 py-1.5 bg-white border border-slate-200 text-blue-600 rounded-full text-[13px] font-medium hover:bg-blue-50 transition-all shadow-sm active:scale-95"
-                >
-                    <Undo2 size={16} />
-                    返回
-                </button>
+                <div className="flex items-center gap-2">
+                    <button
+                        type="button"
+                        onClick={() => setSpecDrawerOpen(true)}
+                        className="flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[13px] font-medium text-amber-700 transition-all hover:bg-amber-100 hover:border-amber-300"
+                        title="需求规格说明（仅研发可见）"
+                    >
+                        <BookOpen size={14} />
+                        需求规格说明
+                    </button>
+                    <button
+                        onClick={onBack}
+                        className="flex items-center gap-1.5 px-5 py-1.5 bg-white border border-slate-200 text-blue-600 rounded-full text-[13px] font-medium hover:bg-blue-50 transition-all shadow-sm active:scale-95"
+                    >
+                        <Undo2 size={16} />
+                        返回
+                    </button>
+                </div>
             </div>
 
             {/* Main Content Area */}
@@ -271,42 +847,101 @@ export const CreateIngestionTaskPanel: React.FC<CreateIngestionTaskPanelProps> =
                 {/* Right Form Card */}
                 <div className="flex-1 bg-white rounded-[20px] shadow-sm border border-slate-100 overflow-y-auto custom-scrollbar p-12">
                     <div className="max-w-[1100px] mx-auto space-y-10">
-                        
+                    {activeStep === 1 && (
+                    <>
                         {/* Form Grid */}
                         <div className="grid grid-cols-2 gap-x-14 gap-y-7">
-                            <FormItem label="任务名称" required>
+                            <FormItem
+                                label={isEditSubTaskMode ? '任务名称（任务组）' : '任务名称'}
+                                required
+                            >
                                 <div className="flex flex-col gap-1.5">
                                     <div className="relative group">
-                                        <input 
-                                            type="text" 
+                                        <input
+                                            type="text"
                                             value={taskName}
+                                            readOnly={isEditSubTaskMode}
                                             onChange={(e) => handleTaskNameChange(e.target.value)}
-                                            placeholder="请输入任务名称"
-                                            className={`w-full h-10 px-4 bg-white border rounded-lg text-[14px] text-slate-700 outline-none transition-all ${taskNameError ? 'border-red-500 focus:ring-4 focus:ring-red-50 shadow-[0_0_0_1px_rgba(239,68,68,0.2)]' : 'border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-50 hover:border-slate-300'}`}
+                                            placeholder={
+                                                isEditSubTaskMode ? '任务组名称' : '请输入任务名称'
+                                            }
+                                            className={`w-full h-10 px-4 border rounded-lg text-[14px] outline-none transition-all ${
+                                                isEditSubTaskMode
+                                                    ? 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-500'
+                                                    : taskNameError
+                                                      ? 'border-red-500 bg-white text-slate-700 focus:ring-4 focus:ring-red-50 shadow-[0_0_0_1px_rgba(239,68,68,0.2)]'
+                                                      : 'border-slate-200 bg-white text-slate-700 focus:border-blue-500 focus:ring-2 focus:ring-blue-50 hover:border-slate-300'
+                                            }`}
                                         />
-                                        {taskNameError && <AlertCircle size={14} className="absolute right-3 top-3 text-red-500 animate-in zoom-in-50" />}
+                                        {!isEditSubTaskMode && taskNameError && (
+                                            <AlertCircle
+                                                size={14}
+                                                className="absolute right-3 top-3 text-red-500 animate-in zoom-in-50"
+                                            />
+                                        )}
                                     </div>
-                                    {taskNameError && (
+                                    {!isEditSubTaskMode && taskNameError && (
                                         <span className="text-[11px] text-red-500 font-bold px-1 flex items-center gap-1 animate-fadeIn">
                                             {taskNameError}
+                                        </span>
+                                    )}
+                                    {isEditSubTaskMode && (
+                                        <span className="px-1 text-[11px] font-medium text-slate-400">
+                                            取自批量任务组名称，不可修改
                                         </span>
                                     )}
                                 </div>
                             </FormItem>
 
-                            <FormItem label="数据分层" required>
-                                <Select value="贴源层" />
-                            </FormItem>
+                            {isEditSubTaskMode ? (
+                                <FormItem label="子任务名称" required>
+                                    <div className="flex flex-col gap-1.5">
+                                        <div className="relative group">
+                                            <input
+                                                type="text"
+                                                value={subTaskName}
+                                                onChange={(e) => handleSubTaskNameChange(e.target.value)}
+                                                placeholder="请输入子任务名称"
+                                                className={`w-full h-10 px-4 bg-white border rounded-lg text-[14px] text-slate-700 outline-none transition-all ${
+                                                    subTaskNameError
+                                                        ? 'border-red-500 focus:ring-4 focus:ring-red-50'
+                                                        : 'border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-50 hover:border-slate-300'
+                                                }`}
+                                            />
+                                            {subTaskNameError && (
+                                                <AlertCircle
+                                                    size={14}
+                                                    className="absolute right-3 top-3 text-red-500"
+                                                />
+                                            )}
+                                        </div>
+                                        {subTaskNameError && (
+                                            <span className="text-[11px] text-red-500 font-bold px-1">
+                                                {subTaskNameError}
+                                            </span>
+                                        )}
+                                    </div>
+                                </FormItem>
+                            ) : (
+                                <FormItem label="数据分层" required>
+                                    <Select value="贴源层" />
+                                </FormItem>
+                            )}
+
+                            {isEditSubTaskMode ? (
+                                <FormItem label="数据分层" required>
+                                    <Select value="贴源层" />
+                                </FormItem>
+                            ) : null}
 
                             <FormItem label="数据类型" required>
                                 <Select 
                                     value={dataType} 
                                     placeholder="请选择" 
-                                    options={[
-                                        { label: '矢量', sub: '支持shp, zip' },
-                                        { label: '影像', sub: '支持tif, img' },
-                                        { label: '三维模型', sub: '支持3DTiles' }
-                                    ]}
+                                    options={dataTypeOptions.map((o) => ({
+                                        label: o.label,
+                                        sub: o.sub,
+                                    }))}
                                     onSelect={setDataType}
                                 />
                             </FormItem>
@@ -330,9 +965,14 @@ export const CreateIngestionTaskPanel: React.FC<CreateIngestionTaskPanelProps> =
                             </FormItem>
 
                             <FormItem label="数据主题" required>
-                                <Select 
+                                <Select
                                     value={dataTheme}
-                                    placeholder="请选择" 
+                                    placeholder="请选择已在「数据主题」中维护的主题"
+                                    options={DATA_THEME_BIND_OPTIONS.map((o) => ({
+                                        label: o.path,
+                                        sub: o.id,
+                                        value: o.id,
+                                    }))}
                                     onSelect={setDataTheme}
                                 />
                             </FormItem>
@@ -378,7 +1018,15 @@ export const CreateIngestionTaskPanel: React.FC<CreateIngestionTaskPanelProps> =
                             {/* Upload Area */}
                             <div className="col-span-2">
                                 <div 
-                                    onClick={() => !selectedCloudFiles.length && setIsCloudModalOpen(true)}
+                                    onClick={() => {
+                                        if (selectedCloudFiles.length) return;
+                                        if (!dataType.trim()) {
+                                            setCloudOpenHint('请先选择「数据类型」，系统才能与云盘文件做类型一致性校验。');
+                                            return;
+                                        }
+                                        setCloudOpenHint('');
+                                        onOpenCloudDisk?.();
+                                    }}
                                     className={`
                                         mt-2 rounded-2xl h-44 flex flex-col items-center justify-center transition-all group relative
                                         ${selectedCloudFiles.length > 0 
@@ -423,13 +1071,11 @@ export const CreateIngestionTaskPanel: React.FC<CreateIngestionTaskPanelProps> =
                                         </div>
                                     )}
                                 </div>
-                                {selectedCloudFiles.length > 0 && (
-                                    <div className="mt-3 pl-1 animate-fadeIn">
-                                        <span className="text-[12px] text-blue-600 font-black tracking-tight flex items-center gap-1.5">
-                                            <div className="w-1.5 h-1.5 bg-blue-600 rounded-full animate-pulse"></div>
-                                            提示匹配到 {matchedShpCount > 0 ? matchedShpCount : selectedCloudFiles.length} 个 shp 文件
-                                        </span>
-                                    </div>
+                                {cloudOpenHint && (
+                                    <p className="mt-2 pl-1 text-[12px] font-bold text-amber-700 flex items-center gap-1.5">
+                                        <AlertTriangle size={14} className="shrink-0" />
+                                        {cloudOpenHint}
+                                    </p>
                                 )}
                             </div>
 
@@ -439,9 +1085,13 @@ export const CreateIngestionTaskPanel: React.FC<CreateIngestionTaskPanelProps> =
                                     <div className="flex items-center justify-between px-1">
                                         <div className="flex items-center gap-2">
                                             <Settings2 size={18} className="text-blue-600" />
-                                            <span className="text-[15px] font-bold text-slate-800">目标库选择批量设置</span>
+                                            <span className="text-[15px] font-bold text-slate-800">
+                                                {isRasterImageryType ? '批量映射' : '目标库选择批量设置'}
+                                            </span>
                                         </div>
                                         <div className="flex items-center gap-4">
+                                            {!isRasterImageryType && (
+                                            <>
                                             {/* 批量选库组件 */}
                                             <div className="flex items-center gap-2 bg-blue-50/50 border border-blue-100 rounded-lg p-1 animate-fadeIn">
                                                 <div className="relative group/batch">
@@ -464,92 +1114,134 @@ export const CreateIngestionTaskPanel: React.FC<CreateIngestionTaskPanelProps> =
                                                 </button>
                                             </div>
 
-                                            <div className="flex items-center gap-1.5 text-[11px] text-slate-400 font-medium bg-slate-50 px-2.5 py-1 rounded-full">
-                                                <HelpCircle size={12} className="text-blue-500" />
-                                                <span>输入不存在的物理表名将自动在数据库中创建</span>
-                                            </div>
-                                            
-                                            {totalMappingPages > 1 && (
-                                                <div className="flex items-center gap-2 bg-slate-50 px-2 py-1 rounded-lg border border-slate-100 shadow-sm">
-                                                    <button 
-                                                        disabled={mappingPage === 1}
-                                                        onClick={() => setMappingPage(p => Math.max(1, p - 1))}
-                                                        className="p-0.5 text-slate-400 hover:text-blue-600 hover:bg-white rounded transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                                            {integrityFailCount > 0 && (
+                                                <div className="relative group/rmfail">
+                                                    <button
+                                                        type="button"
+                                                        onClick={handleRemoveFailedFiles}
+                                                        className="flex items-center gap-1.5 h-8 px-3 rounded-lg border border-red-200 bg-red-50 text-red-600 text-[12px] font-medium hover:bg-red-100 hover:border-red-300 transition-all"
                                                     >
-                                                        <ChevronLeft size={14} />
-                                                    </button>
-                                                    <span className="text-[11px] font-bold text-slate-500 min-w-[32px] text-center">
-                                                        {mappingPage} / {totalMappingPages}
-                                                    </span>
-                                                    <button 
-                                                        disabled={mappingPage === totalMappingPages}
-                                                        onClick={() => setMappingPage(p => Math.min(totalMappingPages, p + 1))}
-                                                        className="p-0.5 text-slate-400 hover:text-blue-600 hover:bg-white rounded transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                                                    >
-                                                        <ChevronRight size={14} />
+                                                        <FilterX size={14} />
+                                                        移除失败项（{integrityFailCount}）
                                                     </button>
                                                 </div>
                                             )}
+                                            </>
+                                            )}
+                                            {isRasterImageryType && (
+                                                <div className="flex items-center gap-1.5 text-[11px] text-slate-400 font-medium bg-slate-50 px-2.5 py-1 rounded-full">
+                                                    <HelpCircle size={12} className="text-blue-500 shrink-0" />
+                                                    <span>
+                                                        {isSatellitePackageDataType(dataType)
+                                                            ? '标准卫星包入库无需指定目标库与物理表，请为每条景数据填写「数据名称」。'
+                                                            : '影像入库无需指定目标库与物理表，请为每条数据填写「数据名称」。'}
+                                                    </span>
+                                                    {onNavigate && (
+                                                        <>
+                                                            <span className="text-slate-300 shrink-0" aria-hidden>
+                                                                ·
+                                                            </span>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => onNavigate('datasource_mgmt')}
+                                                                className="shrink-0 font-bold text-blue-600 hover:underline"
+                                                            >
+                                                                数据源管理
+                                                            </button>
+                                                        </>
+                                                    )}
+                                                </div>
+                                            )}
+                                            
                                         </div>
                                     </div>
                                     
-                                    <div className="border border-slate-100 rounded-2xl overflow-hidden shadow-sm bg-white ring-1 ring-slate-900/5 overflow-x-auto custom-scrollbar">
-                                        <table className="w-full text-left text-[13px] border-collapse min-w-[1400px]">
+                                    <div className="border border-slate-100 rounded-2xl overflow-hidden shadow-sm bg-white ring-1 ring-slate-900/5">
+                                    <div className="overflow-x-auto custom-scrollbar">
+                                        <table className={`w-full text-left text-[13px] border-collapse ${isRasterImageryType ? 'min-w-[920px]' : 'min-w-[1400px]'}`}>
                                             <thead className="bg-[#f8fbfd] text-slate-500 font-bold border-b border-slate-100 uppercase tracking-tight">
                                                 <tr>
-                                                    <th className="p-4 pl-8 w-[320px]">源文件名</th>
+                                                    <th className="p-4 pl-8 w-[260px]">源文件名</th>
+                                                    <th className="p-4 w-[220px]">可识别数据名</th>
                                                     <th className="p-4 w-32">数据格式</th>
-                                                    <th className="p-4 w-72">目标数据库</th>
-                                                    <th className="p-4 w-[300px]">目标表名称</th>
-                                                    <th className="p-4 w-[300px]">目标表别名</th>
-                                                    <th className="p-4 text-center w-24">状态</th>
+                                                    {!isRasterImageryType && (
+                                                        <>
+                                                            <th className="p-4 w-72">目标数据库</th>
+                                                            <th className="p-4 w-[300px]">目标表名称</th>
+                                                        </>
+                                                    )}
+                                                    <th className="p-4 w-[300px]">
+                                                        {isRasterImageryType ? '数据名称' : '目标表别名'}
+                                                    </th>
+                                                    <th className="p-4 text-center w-20">校验状态</th>
                                                     <th className="p-4 text-center w-24 pr-8">操作</th>
                                                 </tr>
                                             </thead>
                                             <tbody className="divide-y divide-slate-50">
-                                                {displayedMappingFiles.map((file) => (
-                                                    <tr key={file.id} className="hover:bg-slate-50/50 transition-colors group">
+                                                {displayedMappingFiles.map((file) => {
+                                                    const typeRowMismatch =
+                                                        !!expectedKind &&
+                                                        !fileMatchesSelectedDataType(
+                                                            file,
+                                                            dataType,
+                                                            expectedKind,
+                                                            cloudTypeByFileId.get(file.id),
+                                                        );
+                                                    return (
+                                                    <tr
+                                                        key={file.id}
+                                                        className={`hover:bg-slate-50/50 transition-colors group ${typeRowMismatch ? 'bg-red-50/50 ring-1 ring-inset ring-red-100' : ''}`}
+                                                    >
                                                         <td className="p-4 pl-8">
                                                             <div className="flex items-center gap-3">
                                                                 <FileIcon format={file.format} />
-                                                                <span className="font-bold text-slate-700 group-hover:text-blue-600 transition-colors truncate max-w-[240px]" title={file.name}>{file.name}</span>
+                                                                <span className="font-bold text-slate-700 group-hover:text-blue-600 transition-colors truncate max-w-[200px]" title={file.name}>{file.name}</span>
                                                             </div>
+                                                        </td>
+                                                        <td className="p-4">
+                                                            <span className="text-[13px] text-slate-700 font-medium truncate block max-w-[190px]" title={file.recognizedDataNames[0]}>
+                                                                {file.recognizedDataNames[0]}
+                                                            </span>
                                                         </td>
                                                         <td className="p-4">
                                                             <span className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase shadow-sm border ${getFormatStyle(file.format)}`}>
                                                                 {file.format}
                                                             </span>
                                                         </td>
-                                                        <td className="p-4">
-                                                            <div className="relative group/db">
-                                                                <Database size={14} className="absolute left-3 top-2.5 text-slate-400 pointer-events-none group-focus-within/db:text-blue-500 transition-colors" />
-                                                                <select 
-                                                                    className="w-full h-9 bg-white border border-slate-200 rounded-lg pl-8 pr-8 outline-none text-[12px] font-medium appearance-none focus:border-blue-400 transition-all shadow-sm"
-                                                                    value={file.targetDb}
-                                                                    onChange={(e) => updateFileInfo(file.id, 'targetDb', e.target.value)}
-                                                                >
-                                                                    {MOCK_DATABASES.map(db => <option key={db} value={db}>{db}</option>)}
-                                                                </select>
-                                                                <ChevronDown size={14} className="absolute right-3 top-2.5 text-slate-400 pointer-events-none" />
-                                                            </div>
-                                                        </td>
-                                                        <td className="p-4">
-                                                            <TableSelector 
-                                                                value={file.targetTable}
-                                                                isAutoCreate={file.isAutoCreate}
-                                                                error={file.targetTableError}
-                                                                onChange={(val) => updateFileInfo(file.id, 'targetTable', val)}
-                                                            />
-                                                        </td>
+                                                        {!isRasterImageryType && (
+                                                            <>
+                                                                <td className="p-4">
+                                                                    <div className="relative group/db">
+                                                                        <Database size={14} className="absolute left-3 top-2.5 text-slate-400 pointer-events-none group-focus-within/db:text-blue-500 transition-colors" />
+                                                                        <select
+                                                                            className="w-full h-9 bg-white border border-slate-200 rounded-lg pl-8 pr-8 outline-none text-[12px] font-medium appearance-none focus:border-blue-400 transition-all shadow-sm"
+                                                                            value={file.targetDb}
+                                                                            onChange={(e) => updateFileInfo(file.id, 'targetDb', e.target.value)}
+                                                                        >
+                                                                            {MOCK_DATABASES.map(db => <option key={db} value={db}>{db}</option>)}
+                                                                        </select>
+                                                                        <ChevronDown size={14} className="absolute right-3 top-2.5 text-slate-400 pointer-events-none" />
+                                                                    </div>
+                                                                </td>
+                                                                <td className="p-4">
+                                                                    <TableSelector
+                                                                        value={file.targetTable}
+                                                                        isAutoCreate={file.isAutoCreate}
+                                                                        error={file.targetTableError}
+                                                                        onChange={(val) => updateFileInfo(file.id, 'targetTable', val)}
+                                                                    />
+                                                                </td>
+                                                            </>
+                                                        )}
                                                         <td className="p-4">
                                                             <div className="relative group/alias">
                                                                 <div className={`flex items-center h-9 px-3 bg-white border rounded-lg transition-all focus-within:ring-4 ${file.targetAliasError ? 'border-red-500 focus-within:border-red-500 focus-within:ring-red-50' : 'border-slate-200 focus-within:border-blue-500 focus-within:ring-blue-50'}`}>
                                                                     <TableIcon size={14} className={`mr-2 shrink-0 transition-colors ${file.targetAliasError ? 'text-red-400' : 'text-slate-400 group-focus-within/alias:text-blue-500'}`} />
-                                                                    <input 
-                                                                        type="text" 
+                                                                    <input
+                                                                        type="text"
                                                                         value={file.targetAlias}
                                                                         onChange={(e) => updateFileInfo(file.id, 'targetAlias', e.target.value)}
-                                                                        placeholder="表别名"
+                                                                        placeholder={isRasterImageryType ? '数据名称' : '表别名'}
                                                                         className="flex-1 bg-transparent border-none outline-none text-[12px] text-slate-700 font-bold placeholder:text-slate-400 placeholder:font-normal h-full min-w-0"
                                                                     />
                                                                     {file.targetAliasError && <AlertCircle size={12} className="text-red-500 ml-1 shrink-0" />}
@@ -562,25 +1254,42 @@ export const CreateIngestionTaskPanel: React.FC<CreateIngestionTaskPanelProps> =
                                                             </div>
                                                         </td>
                                                         <td className="p-4 text-center">
-                                                            <div className="flex flex-col items-center">
-                                                                <CheckCircle2 size={20} className="text-emerald-500 drop-shadow-sm" strokeWidth={2.5} />
-                                                                <span className="text-[9px] text-emerald-600 font-black mt-1 uppercase tracking-wider">Ready</span>
-                                                            </div>
+                                                            {file.integrityStatus === 'ready' ? (
+                                                                <CheckCircle2
+                                                                    size={20}
+                                                                    className="text-emerald-500 mx-auto"
+                                                                    strokeWidth={2.5}
+                                                                    title="校验通过"
+                                                                />
+                                                            ) : (
+                                                                <div className="relative group/vfail inline-flex">
+                                                                    <XCircle size={20} className="text-red-500 cursor-default" strokeWidth={2.5} />
+                                                                    <div className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 rounded-lg bg-slate-800/95 px-3 py-2.5 text-[12px] text-white shadow-xl opacity-0 group-hover/vfail:opacity-100 transition-opacity duration-150 z-50 whitespace-pre-wrap leading-relaxed">
+                                                                        <div className="flex items-center gap-1.5 mb-1.5 pb-1.5 border-b border-white/10">
+                                                                            <XCircle size={12} className="text-red-400 shrink-0" />
+                                                                            <span className="font-bold text-red-300 text-[11px]">校验失败</span>
+                                                                        </div>
+                                                                        {file.integrityReason ?? '数据完整性校验未通过'}
+                                                                        <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent border-t-slate-800/95" />
+                                                                    </div>
+                                                                </div>
+                                                            )}
                                                         </td>
                                                         <td className="p-4 text-center pr-8">
-                                                            <button 
-                                                                onClick={() => handleDeleteParsedFile(file.id)}
+                                                            <button
+                                                                onClick={(e) => { e.stopPropagation(); handleDeleteParsedFile(file.id); }}
                                                                 className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
-                                                                title="移除该文件映射"
+                                                                title="移除该行"
                                                             >
                                                                 <Trash2 size={16} />
                                                             </button>
                                                         </td>
                                                     </tr>
-                                                ))}
+                                                    );
+                                                })}
                                                 {isParsing && (
                                                     <tr>
-                                                        <td colSpan={7} className="p-20 text-center">
+                                                        <td colSpan={mappingTableColCount} className="p-20 text-center">
                                                             <div className="flex flex-col items-center gap-4">
                                                                 <div className="relative">
                                                                     <Loader2 size={40} className="text-blue-500 animate-spin" />
@@ -593,142 +1302,225 @@ export const CreateIngestionTaskPanel: React.FC<CreateIngestionTaskPanelProps> =
                                                 )}
                                             </tbody>
                                         </table>
-                                    </div>
-                                    
-                                    <div className="flex items-center justify-between px-2 py-4 bg-white border border-slate-100 rounded-xl shadow-sm">
+                                    </div>{/* /overflow-x-auto */}
+
+                                    {/* 分页 footer — 在表格容器内 */}
+                                    <div className="flex items-center justify-between px-4 py-3 border-t border-slate-100 bg-slate-50/40">
                                         <div className="flex items-center gap-4 text-[13px] text-slate-500">
-                                            <div className="flex items-center gap-2">
-                                                <Info size={12} className="text-blue-500" />
-                                                <span>系统已自动匹配同名物理表，如需更改请手动输入或在下拉列表中选择。</span>
-                                            </div>
-                                            <div className="w-px h-3 bg-slate-200"></div>
-                                            <div className="font-medium">
+                                            {isRasterImageryType && (
+                                                <div className="flex items-center gap-2">
+                                                    <Info size={12} className="text-blue-500" />
+                                                    <span>
+                                                        {isSatellitePackageDataType(dataType)
+                                                            ? '标准卫星包请确认每条景「数据名称」与产品号一致。'
+                                                            : '影像数据请确认每条「数据名称」准确无误。'}
+                                                    </span>
+                                                </div>
+                                            )}
+                                            <span className="font-medium">
                                                 共 <span className="font-bold text-slate-800">{parsedFiles.length}</span> 条
-                                            </div>
+                                                {integrityFailCount > 0 && (
+                                                    <span className="text-red-600 font-bold">
+                                                        {' '}· {integrityFailCount} 条校验未通过
+                                                    </span>
+                                                )}
+                                            </span>
                                         </div>
-                                        
-                                        <div className="flex items-center gap-4">
-                                            <div className="flex items-center gap-2 px-3 py-1.5 border border-slate-200 rounded-lg bg-white hover:bg-slate-50 cursor-pointer text-slate-600 text-[12px] font-medium transition-all">
-                                                <span>{MAPPING_PAGE_SIZE}条/页</span>
-                                                <ChevronDown size={14} className="text-slate-400" />
-                                            </div>
-                                            <div className="flex gap-1.5 items-center">
-                                                <button 
-                                                    disabled={mappingPage === 1}
-                                                    onClick={() => setMappingPage(p => Math.max(1, p - 1))}
-                                                    className="w-8 h-8 flex items-center justify-center border border-slate-200 rounded-lg text-slate-400 hover:text-blue-600 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-                                                >
-                                                    <ChevronLeft size={16} />
-                                                </button>
-                                                {Array.from({ length: Math.max(1, totalMappingPages) }).map((_, i) => (
-                                                    <button 
-                                                        key={i}
-                                                        onClick={() => setMappingPage(i + 1)}
-                                                        className={`w-8 h-8 flex items-center justify-center rounded-lg font-bold text-[12px] transition-all shadow-sm ${mappingPage === i + 1 ? 'bg-blue-600 text-white shadow-blue-100' : 'border border-slate-100 text-slate-400 hover:bg-slate-50 hover:border-slate-200'}`}
-                                                    >
-                                                        {i + 1}
-                                                    </button>
-                                                ))}
-                                                <button 
-                                                    disabled={mappingPage === totalMappingPages || totalMappingPages === 0}
-                                                    onClick={() => setMappingPage(p => Math.min(totalMappingPages, p + 1))}
-                                                    className="w-8 h-8 flex items-center justify-center border border-slate-200 rounded-lg text-slate-400 hover:text-blue-600 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-                                                >
-                                                    <ChevronRight size={16} />
-                                                </button>
-                                            </div>
-                                            <div className="flex items-center gap-2 text-[13px] text-slate-500">
-                                                前往 <input type="text" className="w-10 h-8 border border-slate-200 rounded text-center outline-none focus:border-blue-400 font-bold text-blue-600" defaultValue={mappingPage} /> 页
-                                            </div>
-                                        </div>
+                                        <PaginationBar
+                                            controlsOnly
+                                            total={parsedFiles.length}
+                                            page={mappingPage}
+                                            pageSize={MAPPING_PAGE_SIZE}
+                                            onPageChange={setMappingPage}
+                                        />
                                     </div>
+                                    </div>{/* /rounded-2xl outer */}
+
+                                    {/* 类型不匹配警告 — 在列表下方 */}
+                                    {expectedKind && parsedFiles.length > 0 && typeMismatchCount > 0 && (
+                                        <div className="rounded-xl border border-red-200 bg-red-50/70 px-4 py-3 text-[12px] text-red-900 shadow-sm">
+                                            <div className="flex flex-wrap items-start gap-2">
+                                                <AlertTriangle size={16} className="shrink-0 text-red-500 mt-0.5" />
+                                                <div className="min-w-0 flex-1 space-y-2">
+                                                    <p className="font-bold leading-snug">
+                                                        当前任务数据类型为「{dataType}」，检测到 {typeMismatchCount}{' '}
+                                                        条云盘条目与推断类型不符。请删除不符文件，或一键移除后重新选择。
+                                                    </p>
+                                                    <div className="flex flex-wrap items-center gap-3">
+                                                        <label className="flex cursor-pointer items-center gap-2 font-bold text-red-800">
+                                                            <input
+                                                                type="checkbox"
+                                                                className="h-3.5 w-3.5 rounded border-red-300 text-red-600 focus:ring-red-400"
+                                                                checked={ignoreDataTypeMismatch}
+                                                                onChange={(e) => setIgnoreDataTypeMismatch(e.target.checked)}
+                                                            />
+                                                            忽略类型差异，仅对推断为「{dataType}」的 {filesTypeEligible.length}{' '}
+                                                            条继续后续步骤
+                                                        </label>
+                                                        <button
+                                                            type="button"
+                                                            onClick={handleRemoveTypeMismatched}
+                                                            className="rounded-lg bg-white px-3 py-1.5 text-[11px] font-black text-red-700 ring-1 ring-red-300 transition hover:bg-red-50"
+                                                        >
+                                                            一键移除不匹配
+                                                        </button>
+                                                    </div>
+                                                    {ignoreDataTypeMismatch && filesTypeEligible.length === 0 && (
+                                                        <p className="text-[11px] font-bold text-red-700">
+                                                            没有与「{dataType}」一致的条目，无法继续；请更换云盘文件或调整数据类型。
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             )}
 
-                            {/* 目标库选择 */}
-                            <div className="col-span-2 mt-2 space-y-3">
-                                <label className="text-[14px] font-bold text-slate-700 flex items-center gap-2">
-                                    <span className="flex items-center">
-                                        <span className="text-red-500 mr-1">*</span>目标库选择
-                                    </span>
-                                    <div className="relative group flex items-center">
-                                        <HelpCircle size={14} className="text-slate-300 cursor-help hover:text-blue-500 transition-colors" />
-                                        <div className="absolute left-full ml-2 px-3 py-2 bg-slate-800 text-white text-[12px] font-medium rounded-lg shadow-2xl opacity-0 pointer-events-none group-hover:opacity-100 group-hover:translate-x-1 transition-all z-[110] w-64 leading-relaxed ring-1 ring-white/10 origin-left">
-                                            配置数据入库的目标数据库、物理表名及别名。输入库中不存在的表名时，系统将在执行入库任务时自动执行建表操作。
-                                            <div className="absolute right-full top-1/2 -translate-y-1/2 border-[6px] border-transparent border-r-slate-800"></div>
-                                        </div>
-                                    </div>
-                                </label>
-                                <div className="grid grid-cols-3 gap-4 items-start">
-                                    <div className="flex flex-col gap-2">
-                                        <Select 
-                                            value={targetDb}
-                                            icon={<Database size={16} className="text-slate-400 shrink-0" />}
-                                            placeholder="请选择数据源名称" 
-                                            options={MOCK_DATABASES.map(db => ({ label: db }))}
-                                            onSelect={setTargetDb}
-                                        />
-                                        <p className="text-[11px] text-slate-400 pl-1">
-                                            没有合适数据库，请前往 <span className="text-blue-600 cursor-pointer hover:underline font-bold" onClick={() => onNavigate?.('datasource_mgmt')}>数据源管理</span> 添加
-                                        </p>
-                                    </div>
-                                    <TableCreatableSelect 
-                                        value={targetTable}
-                                        placeholder="请选择表名称或者输入创建新表" 
-                                        options={MOCK_EXISTING_TABLES}
-                                        onChange={setTargetTable}
-                                    />
-                                    <div className="flex flex-col gap-1.5 min-w-0">
-                                        <div className={`relative group w-full h-10 px-4 flex items-center bg-white border rounded-lg transition-all focus-within:ring-4 ${aliasError ? 'border-red-500 focus-within:border-red-500 focus-within:ring-red-50' : 'border-slate-200 focus-within:border-blue-500 focus-within:ring-blue-50'}`}>
-                                            <TableIcon size={16} className={`mr-2 shrink-0 transition-colors ${aliasError ? 'text-red-400' : 'text-slate-400 group-focus-within:text-blue-500'}`} />
-                                            <input 
-                                                type="text" 
-                                                value={tableAlias}
-                                                onChange={(e) => {
-                                                    setTableAlias(e.target.value);
-                                                    validateAlias(e.target.value);
-                                                }}
-                                                placeholder="请填写表别名（推荐中文）"
-                                                className="flex-1 bg-transparent border-none outline-none text-[14px] text-slate-700 font-bold placeholder:text-slate-400 placeholder:font-normal h-full min-w-0"
-                                            />
-                                            {aliasError && <AlertCircle size={14} className="text-red-500 ml-1 shrink-0 animate-in zoom-in-50" />}
-                                        </div>
-                                        {aliasError && (
-                                            <span className="text-[11px] text-red-500 font-medium px-1 flex items-center gap-1 animate-fadeIn">
-                                                {aliasError}
-                                            </span>
-                                        )}
-                                    </div>
-                                </div>
-                            </div>
                         </div>
 
-                        {/* Footer Action */}
                         <div className="mt-16 flex justify-end">
-                            <button 
-                                disabled={parsedFiles.length === 0 || !!aliasError || !!taskNameError || parsedFiles.some(f => !!f.targetAliasError || !!f.targetTableError)}
+                            <button
+                                type="button"
+                                disabled={!step1NextEnabled}
+                                onClick={() => {
+                                    if (step1NextEnabled) {
+                                        setActiveStep(2);
+                                    }
+                                }}
                                 className={`
                                     px-14 py-3 rounded-xl text-[14px] font-bold transition-all active:scale-95 shadow-xl
-                                    ${(parsedFiles.length > 0 && !aliasError && !taskNameError && !parsedFiles.some(f => !!f.targetAliasError || !!f.targetTableError))
+                                    ${step1NextEnabled
                                         ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-blue-200' 
                                         : 'bg-white border border-blue-100 text-blue-300 cursor-not-allowed'}
                                 `}
                             >
-                                下一步：配置空间索引
+                                下一步：数据质检
                             </button>
                         </div>
+                    </>
+                    )}
+
+                    {activeStep === 2 && (
+                    <>
+                        <div className="mb-8">
+                            <h3 className="text-lg font-black text-slate-800">数据质检</h3>
+                            <p className="mt-1.5 max-w-3xl text-[13px] font-medium leading-relaxed text-slate-500">
+                                选择本次入库要启用的质检工具，支持多选。以下为示意项，可与后续质检引擎或规则中心对接。
+                            </p>
+                            {selectedQualityToolIds.length > 0 && (
+                                <p className="mt-2 text-[12px] font-bold text-blue-600">
+                                    已选 {selectedQualityToolIds.length} 项
+                                </p>
+                            )}
+                        </div>
+                        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                            {QUALITY_INSPECTION_TOOLS.map((tool) => {
+                                const checked = selectedQualityToolIds.includes(tool.id);
+                                const Corner =
+                                    tool.corner === 'clipboard'
+                                        ? ClipboardCheck
+                                        : tool.corner === 'shield'
+                                          ? ShieldCheck
+                                          : tool.corner === 'scan'
+                                            ? ScanSearch
+                                            : tool.corner === 'file'
+                                              ? FileCheck2
+                                              : Ruler;
+                                return (
+                                    <label
+                                        key={tool.id}
+                                        className={`
+                                            relative flex cursor-pointer flex-col rounded-xl border p-4 pb-11 text-left shadow-sm transition-all
+                                            ${
+                                                checked
+                                                    ? 'border-blue-400 bg-gradient-to-br from-sky-50 to-blue-50 ring-2 ring-blue-100'
+                                                    : 'border-blue-100/80 bg-gradient-to-br from-sky-50/90 to-blue-50/50 ring-1 ring-blue-100/60 hover:border-blue-300 hover:ring-blue-200/80'
+                                            }
+                                        `}
+                                    >
+                                        <div className="flex items-start justify-between gap-2">
+                                            <span className="min-w-0 flex-1 pr-1 text-[14px] font-bold leading-snug text-blue-800">
+                                                {tool.name}
+                                            </span>
+                                            <input
+                                                type="checkbox"
+                                                checked={checked}
+                                                onChange={() => toggleQualityTool(tool.id)}
+                                                className="mt-0.5 h-4 w-4 shrink-0 rounded border-blue-300 text-blue-600 focus:ring-2 focus:ring-blue-400"
+                                            />
+                                        </div>
+                                        <p className="mt-2 text-[11px] font-medium leading-relaxed text-blue-700/85">
+                                            {tool.description}
+                                        </p>
+                                        <Corner
+                                            className="pointer-events-none absolute bottom-2.5 right-2.5 h-9 w-9 text-blue-200/95"
+                                            strokeWidth={1.25}
+                                        />
+                                    </label>
+                                );
+                            })}
+                        </div>
+                        <div className="mt-16 flex justify-end gap-3">
+                            <button
+                                type="button"
+                                onClick={() => setActiveStep(1)}
+                                className="rounded-xl border border-slate-200 bg-white px-8 py-3 text-[14px] font-bold text-slate-600 shadow-sm transition hover:bg-slate-50 active:scale-[0.99]"
+                            >
+                                上一步
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setActiveStep(3)}
+                                className="rounded-xl bg-blue-600 px-12 py-3 text-[14px] font-bold text-white shadow-xl shadow-blue-200 transition hover:bg-blue-700 active:scale-95"
+                            >
+                                下一步：服务注册与发布
+                            </button>
+                        </div>
+                    </>
+                    )}
+
+                    {activeStep === 3 && (
+                    <>
+                        <div className="flex flex-col items-center justify-center py-16 text-center">
+                            <div className="mb-4 rounded-2xl bg-slate-100 p-5 text-slate-400">
+                                <Settings2 size={40} strokeWidth={1.25} />
+                            </div>
+                            <h3 className="text-lg font-black text-slate-800">服务注册与发布</h3>
+                            <p className="mt-2 max-w-md text-[13px] font-medium leading-relaxed text-slate-500">
+                                用于登记服务元数据、预览地址与发布策略。完整表单可在后续版本中扩展。
+                            </p>
+                        </div>
+                        <div className="mt-10 flex justify-end gap-3">
+                            <button
+                                type="button"
+                                onClick={() => setActiveStep(2)}
+                                className="rounded-xl border border-slate-200 bg-white px-8 py-3 text-[14px] font-bold text-slate-600 shadow-sm transition hover:bg-slate-50 active:scale-[0.99]"
+                            >
+                                上一步
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleFinish}
+                                className="rounded-xl bg-emerald-600 px-10 py-3 text-[14px] font-bold text-white shadow-lg transition hover:bg-emerald-700 active:scale-95"
+                            >
+                                {isEditSubTaskMode ? '重新提交子任务' : '完成并返回'}
+                            </button>
+                        </div>
+                    </>
+                    )}
                     </div>
                 </div>
 
             </div>
 
-            {/* Cloud Modal */}
-            {isCloudModalOpen && (
-                <CloudDiskSelectionModal 
-                    onClose={() => setIsCloudModalOpen(false)}
-                    onConfirm={handleCloudConfirm}
-                />
-            )}
+            <RequirementsSpecDrawer
+                open={specDrawerOpen}
+                onClose={() => setSpecDrawerOpen(false)}
+                pageKey="create-ingestion-task"
+                pageTitle="新建入库任务"
+                featurePoints={CREATE_INGESTION_FEATURE_POINTS}
+            />
         </div>
     );
 };
@@ -736,22 +1528,45 @@ export const CreateIngestionTaskPanel: React.FC<CreateIngestionTaskPanelProps> =
 // --- Subcomponents ---
 
 const FileIcon: React.FC<{ format: string }> = ({ format }) => {
-    switch(format) {
-        case 'JSON': return <FileJson size={18} className="text-indigo-500" />;
-        case 'CSV': return <TableIcon size={18} className="text-emerald-500" />;
-        default: return <FileCode size={18} className="text-blue-500" />;
+    switch (format) {
+        case 'JSON':
+            return <FileJson size={18} className="text-indigo-500" />;
+        case 'CSV':
+            return <TableIcon size={18} className="text-emerald-500" />;
+        case 'GPKG':
+            return <Layers size={18} className="text-sky-600" />;
+        case 'SHP':
+            return <FileCode size={18} className="text-amber-600" />;
+        case 'TIFF':
+            return <ImageIcon size={18} className="text-violet-500" />;
+        case 'ARCHIVE':
+            return <FileArchive size={18} className="text-slate-600" />;
+        default:
+            return <FileCode size={18} className="text-blue-500" />;
     }
 };
 
 const getFormatStyle = (format: string) => {
-    switch(format) {
-        case 'SHP': return 'bg-amber-50 text-amber-600 border-amber-100';
-        case 'JSON': return 'bg-indigo-50 text-indigo-600 border-indigo-100';
-        case 'CSV': return 'bg-emerald-50 text-emerald-600 border-emerald-100';
-        case 'GPKG': return 'bg-blue-50 text-blue-600 border-blue-100';
-        default: return 'bg-slate-50 text-slate-600 border-slate-100';
+    switch (format) {
+        case 'SHP':
+            return 'bg-amber-50 text-amber-600 border-amber-100';
+        case 'JSON':
+            return 'bg-indigo-50 text-indigo-600 border-indigo-100';
+        case 'CSV':
+            return 'bg-emerald-50 text-emerald-600 border-emerald-100';
+        case 'GPKG':
+            return 'bg-blue-50 text-blue-600 border-blue-100';
+        case 'TIFF':
+            return 'bg-violet-50 text-violet-700 border-violet-100';
+        case 'ARCHIVE':
+            return 'bg-slate-100 text-slate-700 border-slate-200';
+        case 'TAB':
+        case 'ZIP':
+            return 'bg-orange-50 text-orange-700 border-orange-100';
+        default:
+            return 'bg-slate-50 text-slate-600 border-slate-100';
     }
-}
+};
 
 const TableSelector: React.FC<{ 
     value: string; 
@@ -836,166 +1651,6 @@ const TableSelector: React.FC<{
     );
 }
 
-const TableCreatableSelect: React.FC<{
-    value: string;
-    onChange: (val: string) => void;
-    placeholder?: string;
-    options: string[];
-}> = ({ value, onChange, placeholder, options }) => {
-    const [isOpen, setIsOpen] = useState(false);
-    const [inputValue, setInputValue] = useState(value);
-    const [error, setError] = useState<string>('');
-    const containerRef = useRef<HTMLDivElement>(null);
-    const inputRef = useRef<HTMLInputElement>(null);
-
-    useEffect(() => {
-        setInputValue(value);
-    }, [value]);
-
-    const validateTable = (val: string) => {
-        if (!val) {
-            setError('');
-            return true;
-        }
-        const regex = /^[a-zA-Z0-9_]+$/;
-        if (!regex.test(val)) {
-            setError('表名仅支持英文字母、数字和下划线');
-            return false;
-        } else {
-            setError('');
-            return true;
-        }
-    };
-
-    useEffect(() => {
-        const handleClickOutside = (event: MouseEvent) => {
-            if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-                if (isOpen) {
-                    if (validateTable(inputValue)) {
-                        if (inputValue !== value) {
-                            onChange(inputValue);
-                        }
-                    }
-                    setIsOpen(false);
-                }
-            }
-        };
-        document.addEventListener('mousedown', handleClickOutside);
-        return () => document.removeEventListener('mousedown', handleClickOutside);
-    }, [isOpen, inputValue, value, onChange]);
-
-    const filteredOptions = options.filter(opt => 
-        opt.toLowerCase().includes(inputValue.toLowerCase())
-    );
-
-    const handleKeyDown = (e: React.KeyboardEvent) => {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            if (validateTable(inputValue)) {
-                onChange(inputValue);
-                setIsOpen(false);
-                inputRef.current?.blur();
-            }
-        }
-    };
-
-    const isNew = inputValue && !options.includes(inputValue);
-
-    return (
-        <div className="flex flex-col gap-1.5 min-w-0" ref={containerRef}>
-            <div className="relative group">
-                <div 
-                    className={`
-                        w-full h-10 px-4 flex items-center bg-white border rounded-lg transition-all cursor-text focus-within:ring-4
-                        ${error ? 'border-red-500 focus-within:border-red-500 focus-within:ring-red-50' : (isOpen ? 'border-blue-500 ring-4 ring-blue-50 shadow-sm' : 'border-slate-200 hover:border-slate-300')}
-                    `}
-                    onClick={() => inputRef.current?.focus()}
-                >
-                    <div className="flex-1 flex items-center gap-2 min-w-0">
-                        <TableIcon size={16} className={`shrink-0 transition-colors ${error ? 'text-red-400' : (isOpen ? 'text-blue-500' : 'text-slate-400')}`} />
-                        <input 
-                            ref={inputRef}
-                            type="text"
-                            value={inputValue}
-                            onFocus={() => setIsOpen(true)}
-                            onChange={(e) => {
-                                setInputValue(e.target.value);
-                                validateTable(e.target.value);
-                            }}
-                            onKeyDown={handleKeyDown}
-                            placeholder={placeholder}
-                            className="flex-1 bg-transparent border-none outline-none text-[14px] text-slate-700 font-bold placeholder:text-slate-400 placeholder:font-normal h-full min-w-0"
-                        />
-                    </div>
-                    {isNew && !isOpen && !error && (
-                        <div className="shrink-0 bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded text-[10px] font-black mr-1 animate-in zoom-in-50 duration-200">NEW</div>
-                    )}
-                    {error && <AlertCircle size={14} className="text-red-500 ml-1 shrink-0" />}
-                    <ChevronDown 
-                        size={18} 
-                        className={`shrink-0 text-slate-300 cursor-pointer hover:text-slate-500 transition-all ${isOpen ? 'rotate-180' : ''}`}
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            setIsOpen(!isOpen);
-                        }}
-                    />
-                </div>
-
-                {isOpen && (
-                    <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-2xl z-[100] py-1 animate-in fade-in zoom-in-95 duration-200 max-h-64 overflow-y-auto custom-scrollbar">
-                        <div className="px-4 py-2 border-b border-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest flex justify-between items-center">
-                            <span>候选物理表</span>
-                            {isNew && !error && (
-                                <span className="text-[9px] bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded">NEW</span>
-                            )}
-                        </div>
-                        {filteredOptions.map((opt) => (
-                            <div 
-                                key={opt}
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    onChange(opt);
-                                    setIsOpen(false);
-                                    setError('');
-                                }}
-                                className={`px-4 py-2.5 hover:bg-blue-50 cursor-pointer transition-colors flex items-center justify-between ${value === opt ? 'bg-blue-50/50' : ''}`}
-                            >
-                                <span className={`text-[13px] font-bold ${value === opt ? 'text-blue-600' : 'text-slate-700'}`}>{opt}</span>
-                                {value === opt && <Check size={14} className="text-blue-600" />}
-                            </div>
-                        ))}
-                        {isNew && !error && (
-                            <div 
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    onChange(inputValue);
-                                    setIsOpen(false);
-                                }}
-                                className="px-4 py-3 bg-slate-50 border-t border-slate-100 cursor-pointer group/add"
-                            >
-                                <div className="flex items-center gap-2 text-[12px] text-blue-600 font-bold group-hover/add:translate-x-1 transition-transform">
-                                    <Plus size={14} strokeWidth={3} />
-                                    <span>创建新表："{inputValue}"</span>
-                                </div>
-                            </div>
-                        )}
-                        {filteredOptions.length === 0 && !inputValue && (
-                            <div className="p-8 text-center text-slate-400 text-[12px] font-medium italic">
-                                暂无更多可匹配表项，请输入名称创建
-                            </div>
-                        )}
-                    </div>
-                )}
-            </div>
-            {error && (
-                <span className="text-[11px] text-red-500 font-medium px-1 flex items-center gap-1 animate-fadeIn">
-                    {error}
-                </span>
-            )}
-        </div>
-    );
-};
-
 const FormItem: React.FC<{ label: string; required?: boolean; children: React.ReactNode }> = ({ label, required, children }) => (
     <div className="space-y-2.5">
         <label className="text-[14px] font-bold text-slate-700 block">
@@ -1006,15 +1661,19 @@ const FormItem: React.FC<{ label: string; required?: boolean; children: React.Re
     </div>
 );
 
-const Select: React.FC<{ 
-    value?: string; 
-    placeholder?: string; 
-    options?: { label: string; sub?: string }[];
+const Select: React.FC<{
+    value?: string;
+    placeholder?: string;
+    options?: { label: string; sub?: string; value?: string }[];
     onSelect?: (val: string) => void;
     icon?: React.ReactNode;
 }> = ({ value, placeholder, options, onSelect, icon }) => {
     const [isOpen, setIsOpen] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
+
+    const optionKey = (opt: { label: string; value?: string }) => opt.value ?? opt.label;
+    const selectedLabel =
+        options?.find((o) => optionKey(o) === value)?.label ?? (value || '');
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
@@ -1028,41 +1687,48 @@ const Select: React.FC<{
 
     return (
         <div className="relative group" ref={containerRef}>
-            <div 
+            <div
                 onClick={() => setIsOpen(!isOpen)}
                 className={`
-                    w-full h-10 px-4 flex items-center justify-between bg-white border border-slate-200 rounded-lg cursor-pointer transition-all hover:border-slate-300
+                    flex h-10 w-full cursor-pointer items-center justify-between rounded-lg border border-slate-200 bg-white px-4 transition-all hover:border-slate-300
                     ${isOpen ? 'border-blue-500 ring-4 ring-blue-50' : ''}
-                    ${!value ? 'text-slate-400 font-normal' : 'text-slate-700 font-bold'}
+                    ${!value ? 'font-normal text-slate-400' : 'font-bold text-slate-700'}
                 `}
             >
-                <div className="flex items-center gap-2 truncate">
+                <div className="flex min-w-0 flex-1 items-center gap-2 truncate">
                     {icon}
-                    <span className="text-[14px] truncate">{value || placeholder}</span>
+                    <span className="truncate text-[14px]">{selectedLabel || placeholder}</span>
                 </div>
-                <ChevronDown size={18} className={`text-slate-400 group-hover:text-slate-600 transition-all ${isOpen ? 'rotate-180' : ''}`} />
+                <ChevronDown
+                    size={18}
+                    className={`shrink-0 text-slate-400 transition-all group-hover:text-slate-600 ${isOpen ? 'rotate-180' : ''}`}
+                />
             </div>
             {isOpen && options && (
-                <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-2xl z-[100] py-1 animate-in fade-in zoom-in-95 duration-200 max-h-64 overflow-y-auto custom-scrollbar">
-                    {options.map((opt) => (
-                        <div 
-                            key={opt.label}
-                            onClick={() => {
-                                onSelect?.(opt.label);
-                                setIsOpen(false);
-                            }}
-                            className={`px-4 py-2 hover:bg-blue-50 cursor-pointer transition-colors flex items-center justify-between ${value === opt.label ? 'bg-blue-50/50' : ''}`}
-                        >
-                            <div className={`text-[14px] font-bold ${value === opt.label ? 'text-blue-600' : 'text-slate-800'}`}>
-                                {opt.label}
-                            </div>
-                            {opt.sub && (
-                                <div className="text-[11px] text-slate-400 font-medium mt-0.5 italic">
-                                    {opt.sub}
+                <div className="absolute left-0 right-0 top-full z-[100] mt-1 max-h-64 animate-in overflow-y-auto rounded-xl border border-slate-200 bg-white py-1 shadow-2xl fade-in zoom-in-95 duration-200 custom-scrollbar">
+                    {options.map((opt) => {
+                        const k = optionKey(opt);
+                        const picked = value === k;
+                        return (
+                            <div
+                                key={k}
+                                onClick={() => {
+                                    onSelect?.(k);
+                                    setIsOpen(false);
+                                }}
+                                className={`flex cursor-pointer items-center justify-between gap-3 px-4 py-2 transition-colors hover:bg-blue-50 ${picked ? 'bg-blue-50/50' : ''}`}
+                            >
+                                <div
+                                    className={`min-w-0 flex-1 text-[14px] font-bold ${picked ? 'text-blue-600' : 'text-slate-800'}`}
+                                >
+                                    {opt.label}
                                 </div>
-                            )}
-                        </div>
-                    ))}
+                                {opt.sub ? (
+                                    <div className="shrink-0 text-right text-[10px] font-mono text-slate-400">{opt.sub}</div>
+                                ) : null}
+                            </div>
+                        );
+                    })}
                 </div>
             )}
         </div>
